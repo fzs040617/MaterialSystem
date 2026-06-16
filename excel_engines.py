@@ -138,27 +138,56 @@ def generate_accessory_excel(uploaded_file, params):
     """清洗旺店通数据并生成辅料下单表"""
     file_ext = os.path.splitext(uploaded_file.name)[1].lower()
     df = pd.read_csv(uploaded_file) if file_ext == '.csv' else pd.read_excel(uploaded_file)
-    df = df.dropna(subset=['条码'])
-    df['采购量'] = pd.to_numeric(df['采购量'], errors='coerce')
-    df = df.dropna(subset=['采购量'])
-    df['货品名称'] = df['货品名称'].astype(str).str.replace(r'\(VIP\)|（VIP）', '', regex=True)
-    df['采购量'] = np.ceil(df['采购量'] * 1.02).astype(int)
-    df['洗水唛数量'] = df['采购量'] if params['has_wash'] == '有' else 0
+    required_cols = ['商家编码', '货品编号', '货品名称', '规格名称', '规格码', '采购确认量', '零售价格', '平台']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"原表单缺少必要列：{', '.join(missing_cols)}")
+
+    df = df[required_cols].copy()
+    df['采购确认量'] = pd.to_numeric(df['采购确认量'], errors='coerce')
+    df = df.dropna(subset=['采购确认量'])
+    df['吊牌采购量'] = df['采购确认量'].astype(int)
+    df['货品名称'] = df['货品名称'].astype(str).str.replace(r'\(VIP\)|（VIP）', '', regex=True).str.strip()
+
+    if params['has_wash'] == '有':
+        wash_multiplier = 2 if params.get('is_two_pack') == '是' else 1
+        df['洗水唛采购量'] = df['吊牌采购量'] * wash_multiplier
+    else:
+        df['洗水唛采购量'] = 0
 
     out_cols = {}
     missing_69_count = 0
     if params['has_69'] == '有':
-        conn = get_db_conn()
-        map_df = pd.read_sql_query("SELECT barcode as '条码', code_69 as '国际条码' FROM barcode_mapping", conn)
-        conn.close()
-        df = df.merge(map_df, on='条码', how='left')
-        out_cols['国际条码'] = df['国际条码'].fillna('')
-        missing_69_count = (out_cols['国际条码'] == '').sum()
+        out_cols['69码'] = ''
 
-    out_cols.update({'货品编号': df.get('货品编号', ''), '货品名称': df['货品名称'], '规格名称': df.get('规格名称', ''), 
-                     '规格码': df.get('规格码', ''), '条码': df['条码'], '洗水唛数量': df['洗水唛数量'], 
-                     '采购量': df['采购量'], '零售价格': df.get('零售价格', ''), '平台': df.get('平台', ''), '内部码': params['internal_code']})
+    out_cols.update({
+        '商家编码': df['商家编码'],
+        '货品编号': df['货品编号'],
+        '货品名称': df['货品名称'],
+        '规格名称': df['规格名称'],
+        '规格码': df['规格码'],
+        '吊牌采购量': df['吊牌采购量'],
+        '洗水唛采购量': df['洗水唛采购量'],
+        '零售价格': df['零售价格'],
+        '平台': df['平台'],
+        '采购单查询码': params['internal_code'],
+        '辅料款式': params.get('accessory_type', '')
+    })
     df_out = pd.DataFrame(out_cols)
+
+    def get_standard_info(product_name):
+        rules = [
+            ('舒适文胸', 'GB/T 8878-2023'),
+            ('吊带背心', 'GB/T 8878-2023'),
+            ('文胸', 'FZ/T 73012-2017'),
+            ('背心', 'GB/T 8878-2023')
+        ]
+        for category, standard in rules:
+            if category in product_name:
+                style_name = product_name.replace(category, '', 1).strip()
+                display_name = f"{category}（{style_name}）" if style_name else category
+                return display_name, standard
+        return product_name, ''
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -167,19 +196,24 @@ def generate_accessory_excel(uploaded_file, params):
         offset_col = ws.max_column + 2
         ws.cell(row=1, column=offset_col, value=params['material_text'])
         first_row = df.iloc[0]
-        clean_type = str(first_row.get('货品名称', '')).split()[1] if len(str(first_row.get('货品名称', '')).split()) >= 2 else ""
-        std_val = STANDARD_MAP.get(clean_type, "")
-        tag_data = [f"名称：{first_row.get('货品名称', '')}", f"货号：{first_row.get('货品编号', '')}", f"号型：{first_row.get('规格码', '')}", 
-                    f"颜色：{first_row.get('规格名称', '')}", f"商品价：￥{first_row.get('零售价格', '')}", f"执行标准：{std_val}", f"内部码：{params['internal_code']}"]
-        for i, text in enumerate(tag_data): ws.cell(row=15+i, column=offset_col, value=text)
+        template_name, std_val = get_standard_info(str(first_row.get('货品名称', '')))
+        tag_data = [
+            "润微",
+            f"名称：{template_name}",
+            f"货号：{first_row.get('货品编号', '')}",
+            f"号型：{first_row.get('规格码', '')}",
+            f"颜色：{first_row.get('规格名称', '')}",
+            f"商品价：{first_row.get('零售价格', '')}",
+            f"执行标准：{std_val}"
+        ]
+        for i, text in enumerate(tag_data): ws.cell(row=2+i, column=offset_col, value=text)
         
-        ws.cell(row=30, column=offset_col, value="合计"); ws.cell(row=30, column=offset_col+1, value="单价"); ws.cell(row=30, column=offset_col+2, value="数量")
-        wash_qty = int(df_out['洗水唛数量'].sum())
-        wash_p = (0.05 if params['wash_material'] == '布质' else 0.04) if params['has_wash'] == '有' else 0.0
-        ws.cell(row=31, column=offset_col, value=f"洗水唛({params.get('wash_material','')})"); ws.cell(row=31, column=offset_col+1, value=wash_p); ws.cell(row=31, column=offset_col+2, value=wash_qty)
-        acc_p = 0.09 if params['accessory_type'] == '贴纸' else 0.16
-        ws.cell(row=32, column=offset_col, value=params['accessory_type']); ws.cell(row=32, column=offset_col+1, value=acc_p); ws.cell(row=32, column=offset_col+2, value=int(df_out['采购量'].sum()))
-        ws.cell(row=35, column=offset_col, value=f"工厂地址：{params['selected_factory_addr']}")
+        summary_row = len(df_out) + 3
+        tag_qty = int(df_out['吊牌采购量'].sum())
+        wash_qty = int(df_out['洗水唛采购量'].sum())
+        ws.cell(row=summary_row, column=1, value=f"吊牌总采购量：{tag_qty}")
+        ws.cell(row=summary_row + 1, column=1, value=f"洗水唛总采购量：{wash_qty}")
+        ws.cell(row=summary_row + 2, column=1, value=f"收件信息：{params['selected_factory_addr']}")
         adjust_column_width(ws)
     return output.getvalue(), missing_69_count
 

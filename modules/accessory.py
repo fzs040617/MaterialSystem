@@ -27,14 +27,15 @@ def render_accessory_order(uname):
     with c2:
         st.markdown("**洗水唛**")
         has_wash = st.radio("是否有洗水唛", ["无", "有"], horizontal=True, label_visibility="collapsed")
-        wash_material = st.radio("材质", ["布质", "胶质"], horizontal=True) if has_wash == "有" else None
+        wash_material = st.radio("洗水唛材料", ["胶带（唯品/三野）", "布带（天猫/抖音）"], horizontal=True) if has_wash == "有" else None
     with c3:
         st.markdown("**辅料款式 (必选)**")
-        accessory_type = st.radio("款式", ["吊牌+吊粒", "吊牌+防伪带", "贴纸"], horizontal=True, label_visibility="collapsed")
+        accessory_type = st.radio("款式", ["绿色吊牌+吊粒", "五张新吊牌+防伪带", "贴纸"], horizontal=True, label_visibility="collapsed")
 
     c4, c5 = st.columns(2)
-    internal_code = c4.text_input("内部码 (选填)", placeholder="例如: CG260206012")
+    internal_code = c4.text_input("采购单查询码 (必填)", placeholder="例如: CG260206012")
     material_text = c5.text_input("材质表 (选填)", placeholder="例如: 锦纶79.5% 氨纶20.5%")
+    is_two_pack = st.radio("是否两件装", ["否", "是"], horizontal=True, index=0)
 
     # 3. 制衣厂选择逻辑
     st.subheader("🏭 2. 选择收货制衣厂")
@@ -64,7 +65,8 @@ def render_accessory_order(uname):
         if not selected_rows.empty:
             selected_factory_name = selected_rows.iloc[0]['name']
             fac_info = df_g[df_g['name'] == selected_factory_name].iloc[0]
-            selected_factory_addr = f"{fac_info.get('address', '')}".strip()
+            raw_addr = f"{fac_info.get('address', '')}".strip()
+            selected_factory_addr = f"{selected_factory_name}：{raw_addr}" if raw_addr else selected_factory_name
             st.success(f"📍 **收件信息:** {selected_factory_addr}")
 
     # 4. 文件上传与生成引擎调用
@@ -74,6 +76,8 @@ def render_accessory_order(uname):
     if st.button("🚀 开始生成辅料下单表", type="primary", use_container_width=True):
         if not uploaded_wdt:
             st.error("❌ 请先上传表格！")
+        elif not internal_code.strip():
+            st.error("请先填写采购单查询码")
         elif not selected_factory_name:
             st.error("❌ 请勾选收货制衣厂！")
         else:
@@ -84,6 +88,7 @@ def render_accessory_order(uname):
                         'has_69': has_69,
                         'has_wash': has_wash,
                         'wash_material': wash_material,
+                        'is_two_pack': is_two_pack,
                         'accessory_type': accessory_type,
                         'internal_code': internal_code,
                         'material_text': material_text,
