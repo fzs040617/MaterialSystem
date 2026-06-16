@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+
+# Streamlit / local cache
+.streamlit/
+.cache/
+
+# Sensitive config
+.env
+*.env
+
+# Database / data files
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+
+# Logs / temp
+*.log
+tmp/
+temp/
+downloads/
+
+# Images and real business data
+images/
+
+# Office temp files
+~$*
+*.tmp
+
+# System / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local sensitive config
+config.py
+
+# Excel/data files
+*.xlsx
+*.xls
+*.csv

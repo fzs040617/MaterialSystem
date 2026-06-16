@@ -1,0 +1,11 @@
+<view class="container">
+  <view>
+    <text>Hello, Creator</text>
+  </view>
+  <view class="button button-primary" bindtap="createBlock">
+    <text>Create</text>
+  </view>
+  <view class="button" bindtap="cancelBlock">
+    <text>Cancel</text>
+  </view>
+</view> 

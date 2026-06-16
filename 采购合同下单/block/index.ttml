@@ -1,0 +1,22 @@
+<view class="block" style="height: {{height}}px">
+  <view class="block-title">
+    <text>Hello, Block</text>
+  </view>
+  <view class="container">
+    <view class="button button-primary" bindtap="request">
+      <text class="text">网络请求</text>
+    </view>
+    <view class="button button-primary" bindtap="getUserInfo">
+      <text class="text">获取用户信息</text>
+    </view>
+    <view class="button button-primary" bindtap="getContainerRect">
+      <text class="text">获取容器尺寸</text>
+    </view>
+    <view class="button button-primary" bindtap="showToast">
+      <text class="text">显示提示框</text>
+    </view>
+  </view>
+  <view class="info" tt:if="{{info}}">
+    <text>{{info}}</text>
+  </view>
+</view>

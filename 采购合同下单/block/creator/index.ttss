@@ -1,0 +1,14 @@
+@import '../common/button.ttss';
+
+.container {
+  font-size: 14px;
+  color: #1f2329;
+  line-height: 1.5;
+  border: 1px solid rgba(187, 191, 196, 0.5);
+  border-radius: 4px;
+  padding: 16px;
+}
+
+.button-primary {
+  margin-right: 10px;
+}

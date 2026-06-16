@@ -1,0 +1,36 @@
+@import './common/button.ttss';
+
+.block {
+  box-sizing: border-box;
+  padding: 8px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.block-title {
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.container {
+   display: flex;
+   flex-direction: row;
+   justify-content:flex-start;
+   flex-wrap: wrap;
+   flex-shrink: 0;
+}
+
+.info {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: monospace;
+  border: 1px solid rgba(187, 191, 196, 0.5);
+  border-radius: 4px;
+  background-color: #f5f6f7;
+  padding: 12px;
+}
+
+.button-primary {
+  margin: 0 4px 8px;
+  align-items: center;
+}

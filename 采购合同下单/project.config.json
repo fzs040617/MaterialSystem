@@ -1,0 +1,11 @@
+{
+  "setting": {
+    "es6": true,
+    "minified": true
+  },
+  "appid": "cli_aa8d6a55fbf95cb3",
+  "projectname": "采购合同下单",
+  "blocks": [
+    "block/index"
+  ]
+}
