@@ -147,6 +147,25 @@ def generate_accessory_excel(uploaded_file, params):
     optional_cols = ['采购量'] if '采购量' in df.columns else []
     df = df[required_cols + optional_cols].copy()
 
+    # 去掉旺店通原表自带的合计/总计/小计行，避免写入明细表，也避免数量重复统计
+    summary_keywords = r'合计|总计|小计'
+    summary_mask = pd.Series(False, index=df.index)
+    for col in ['商家编码', '货品编号', '货品名称', '规格名称', '规格码', '平台']:
+        summary_mask = summary_mask | df[col].fillna('').astype(str).str.strip().str.contains(
+            summary_keywords,
+            regex=True,
+            na=False
+        )
+    df = df[~summary_mask].copy()
+
+    # 只保留真实商品明细行：货品编号、货品名称、规格码不能全为空
+    product_key_mask = (
+        df['货品编号'].fillna('').astype(str).str.strip().ne('') |
+        df['货品名称'].fillna('').astype(str).str.strip().ne('') |
+        df['规格码'].fillna('').astype(str).str.strip().ne('')
+    )
+    df = df[product_key_mask].copy()
+
     df['采购确认量'] = pd.to_numeric(df['采购确认量'], errors='coerce')
     df = df.dropna(subset=['采购确认量'])
     if df.empty:
@@ -270,10 +289,17 @@ def generate_accessory_excel(uploaded_file, params):
         summary_row = max(len(df_out) + 3, len(tag_data) + 4)
         tag_qty = int(df['吊牌采购量'].sum())
         wash_qty = int(df['洗水唛采购量'].sum())
+        accessory_type = clean_excel_value(params.get('accessory_type', ''))
+        selected_factory_addr = clean_excel_value(params.get('selected_factory_addr', ''))
 
         ws.cell(row=summary_row, column=1, value=f"吊牌总采购量：{tag_qty}")
         ws.cell(row=summary_row + 1, column=1, value=f"洗水唛总采购量：{wash_qty}")
-        ws.cell(row=summary_row + 2, column=1, value=f"收件信息：{params['selected_factory_addr']}")
+
+        if accessory_type:
+            ws.cell(row=summary_row + 2, column=1, value=f"辅料款式：{accessory_type}")
+            ws.cell(row=summary_row + 3, column=1, value=f"收件信息：{selected_factory_addr}")
+        else:
+            ws.cell(row=summary_row + 2, column=1, value=f"收件信息：{selected_factory_addr}")
 
         ws.column_dimensions[get_column_letter(offset_col - 1)].width = 22
         ws.column_dimensions[get_column_letter(offset_col)].width = 28
