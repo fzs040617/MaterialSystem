@@ -147,7 +147,7 @@ def generate_accessory_excel(uploaded_file, params):
     optional_cols = ['采购量'] if '采购量' in df.columns else []
     df = df[required_cols + optional_cols].copy()
 
-    # 去掉旺店通原表自带的合计/总计/小计行，避免写入明细表，也避免数量重复统计
+    # 去掉旺店通原表自带的合计 / 总计 / 小计行，避免写入明细表，也避免数量重复统计
     summary_keywords = r'合计|总计|小计'
     summary_mask = pd.Series(False, index=df.index)
     for col in ['商家编码', '货品编号', '货品名称', '规格名称', '规格码', '平台']:
@@ -158,7 +158,7 @@ def generate_accessory_excel(uploaded_file, params):
         )
     df = df[~summary_mask].copy()
 
-    # 只保留真实商品明细行：货品编号、货品名称、规格码不能全为空
+    # 只保留真实商品明细行
     product_key_mask = (
         df['货品编号'].fillna('').astype(str).str.strip().ne('') |
         df['货品名称'].fillna('').astype(str).str.strip().ne('') |
@@ -216,6 +216,21 @@ def generate_accessory_excel(uploaded_file, params):
             return ''
         text = str(value).strip()
         return '' if text.lower() == 'nan' else text
+
+    def get_accessory_image_path(accessory_type):
+        """按辅料款式匹配本地图片"""
+        image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "accessory_templates")
+        image_map = {
+            "绿色吊牌+吊粒": ["绿色吊牌吊粒.png", "绿色吊牌吊粒.jpg", "绿色吊牌吊粒.jpeg"],
+            "五张新吊牌+防伪带": ["五张新吊牌防伪带.png", "五张新吊牌防伪带.jpg", "五张新吊牌防伪带.jpeg"],
+        }
+
+        for filename in image_map.get(accessory_type, []):
+            image_path = os.path.join(image_dir, filename)
+            if os.path.exists(image_path):
+                return image_path
+
+        return ""
 
     df_out = pd.DataFrame(out_cols)
     df_out = df_out.replace({np.nan: '', pd.NA: '', None: ''})
@@ -292,14 +307,35 @@ def generate_accessory_excel(uploaded_file, params):
         accessory_type = clean_excel_value(params.get('accessory_type', ''))
         selected_factory_addr = clean_excel_value(params.get('selected_factory_addr', ''))
 
-        ws.cell(row=summary_row, column=1, value=f"吊牌总采购量：{tag_qty}")
-        ws.cell(row=summary_row + 1, column=1, value=f"洗水唛总采购量：{wash_qty}")
+        current_row = summary_row
+        ws.cell(row=current_row, column=1, value=f"吊牌总采购量：{tag_qty}")
+        current_row += 1
+
+        ws.cell(row=current_row, column=1, value=f"洗水唛总采购量：{wash_qty}")
+        current_row += 1
 
         if accessory_type:
-            ws.cell(row=summary_row + 2, column=1, value=f"辅料款式：{accessory_type}")
-            ws.cell(row=summary_row + 3, column=1, value=f"收件信息：{selected_factory_addr}")
-        else:
-            ws.cell(row=summary_row + 2, column=1, value=f"收件信息：{selected_factory_addr}")
+            ws.cell(row=current_row, column=1, value=f"辅料款式：{accessory_type}")
+            current_row += 1
+
+            image_path = get_accessory_image_path(accessory_type)
+            if image_path:
+                try:
+                    img = xlImage(image_path)
+                    img.width = 360
+                    img.height = 220
+                    ws.add_image(img, f"A{current_row}")
+
+                    # 给图片预留高度，避免图片压住收件信息
+                    for row_idx in range(current_row, current_row + 11):
+                        ws.row_dimensions[row_idx].height = 20
+
+                    current_row += 12
+                except Exception as e:
+                    ws.cell(row=current_row, column=1, value=f"辅料图片插入失败：{e}")
+                    current_row += 1
+
+        ws.cell(row=current_row, column=1, value=f"收件信息：{selected_factory_addr}")
 
         ws.column_dimensions[get_column_letter(offset_col - 1)].width = 22
         ws.column_dimensions[get_column_letter(offset_col)].width = 28
