@@ -163,44 +163,86 @@ def save_accessory_history(uploaded_file, params, excel_bytes, uname):
         uploaded_file.seek(0)
         file_ext = os.path.splitext(uploaded_file.name)[1].lower()
         df_tmp = pd.read_csv(uploaded_file) if file_ext == '.csv' else pd.read_excel(uploaded_file)
-        
-        # 简单提取摘要信息 (货号、产品名等)
+        df_tmp.columns = [str(col).strip() for col in df_tmp.columns]
+
+        # 简单提取摘要信息
         item_no_val = "未知货号"
         p_name_val = "未知产品"
         total_q_val = 0
-        
-        # 智能匹配列名并提取
-        for col in df_tmp.columns:
-            if df_tmp[col].astype(str).str.match(r'^R[A-Z]\d+').any():
-                item_no_val = df_tmp[df_tmp[col].astype(str).str.match(r'^R[A-Z]\d+')][col].iloc[0]
-                break
-        
-        name_cols = [c for c in df_tmp.columns if '名称' in c]
-        if name_cols: p_name_val = str(df_tmp[name_cols[0]].iloc[0])
 
-        qty_cols = [c for c in df_tmp.columns if '量' in c]
-        if qty_cols:
-            raw_qty = pd.to_numeric(df_tmp[qty_cols[0]], errors='coerce').sum()
-            total_q_val = int(np.ceil(raw_qty * 1.02))
+        # 过滤旺店通原表自带的合计 / 总计 / 小计行，避免历史数量重复
+        summary_keywords = r'合计|总计|小计'
+        summary_mask = pd.Series(False, index=df_tmp.index)
+        for col in df_tmp.columns:
+            summary_mask = summary_mask | df_tmp[col].fillna('').astype(str).str.strip().str.contains(
+                summary_keywords,
+                regex=True,
+                na=False
+            )
+        df_detail = df_tmp[~summary_mask].copy()
+
+        # 优先从“货品编号”提取货号
+        if '货品编号' in df_detail.columns:
+            valid_item_no = df_detail['货品编号'].dropna().astype(str).str.strip()
+            valid_item_no = valid_item_no[valid_item_no != '']
+            if not valid_item_no.empty:
+                item_no_val = valid_item_no.iloc[0]
+        else:
+            # 兼容旧表：智能匹配 R 开头货号
+            for col in df_detail.columns:
+                col_text = df_detail[col].astype(str)
+                matched = df_detail[col_text.str.match(r'^R[A-Z]\d+', na=False)]
+                if not matched.empty:
+                    item_no_val = str(matched[col].iloc[0])
+                    break
+
+        # 优先从“货品名称”提取产品名，并删除 VIP
+        if '货品名称' in df_detail.columns:
+            valid_names = df_detail['货品名称'].dropna().astype(str).str.strip()
+            valid_names = valid_names[valid_names != '']
+            if not valid_names.empty:
+                p_name_val = re.sub(r'\(VIP\)|（VIP）', '', valid_names.iloc[0]).strip()
+        else:
+            name_cols = [c for c in df_detail.columns if '名称' in c]
+            if name_cols:
+                p_name_val = str(df_detail[name_cols[0]].iloc[0])
+                p_name_val = re.sub(r'\(VIP\)|（VIP）', '', p_name_val).strip()
+
+        # 历史记录数量：优先使用“采购确认量”，只统计真实明细，不再乘 1.02
+        if '采购确认量' in df_detail.columns:
+            qty_series = pd.to_numeric(df_detail['采购确认量'], errors='coerce').dropna()
+            total_q_val = int(qty_series.sum()) if not qty_series.empty else 0
+        else:
+            # 兼容旧表：找包含“量”的列，但不额外乘 1.02
+            qty_cols = [c for c in df_detail.columns if '量' in c]
+            if qty_cols:
+                qty_series = pd.to_numeric(df_detail[qty_cols[0]], errors='coerce').dropna()
+                total_q_val = int(qty_series.sum()) if not qty_series.empty else 0
 
         # 写入数据库
-        conn = get_db_conn(); c = conn.cursor()
+        conn = get_db_conn()
+        c = conn.cursor()
         create_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         c.execute('''INSERT INTO accessory_history 
                      (create_time, order_date, operator, factory_name, file_name, excel_data,
                       item_no, product_name, acc_style, total_qty, internal_code, material_info) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', 
-                    (create_time, str(params['order_date']), uname, params['selected_factory_name'], 
-                    params.get('output_filename', f"辅料单_{params['selected_factory_name']}.xlsx"), excel_bytes, 
-                    item_no_val, p_name_val, params['accessory_type'], total_q_val, 
-                    params['internal_code'], params['material_text']))
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                  (create_time, str(params['order_date']), uname, params['selected_factory_name'],
+                   params.get('output_filename', f"辅料单_{params['selected_factory_name']}.xlsx"), excel_bytes,
+                   item_no_val, p_name_val, params['accessory_type'], total_q_val,
+                   params['internal_code'], params['material_text']))
+
         conn.commit()
-                    # 辅料下单成功后，异步同步到飞书多维表格
+
+        # 辅料下单成功后，异步同步到飞书多维表格
         try:
             sync_thread = threading.Thread(target=migrate_accessory_history_to_feishu)
             sync_thread.start()
         except Exception as e:
             print(f"后台触发辅料飞书同步失败: {e}")
+
         conn.close()
+
     except Exception:
         pass
