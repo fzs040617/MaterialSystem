@@ -1,12 +1,42 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import os
+import os,re
 import numpy as np
 import threading
 from sync_history_to_feishu import migrate_accessory_history_to_feishu
 from database import get_db_conn, load_data
 from excel_engines import generate_accessory_excel
+
+def _safe_accessory_filename_part(value):
+    """清理辅料下单下载文件名片段"""
+    text = "" if value is None else str(value).strip()
+
+    # 去掉 Windows 文件名不允许字符
+    text = re.sub(r'[\\/:*?"<>|]+', '', text)
+
+    # 去掉括号、加号、空白，让款式/工厂名更干净
+    text = text.replace("+", "")
+    text = re.sub(r'[（）()]', '', text)
+    text = re.sub(r'\s+', '', text)
+
+    return text or "未填写"
+
+
+def _format_accessory_output_filename(internal_code, accessory_type, selected_factory_name, order_date):
+    """辅料下单表下载文件名：内部码 款式名称 工厂名称 日期.xlsx"""
+    code_part = _safe_accessory_filename_part(internal_code)
+    style_part = _safe_accessory_filename_part(accessory_type)
+    factory_part = _safe_accessory_filename_part(selected_factory_name)
+
+    if hasattr(order_date, "strftime"):
+        date_part = order_date.strftime("%Y%m%d")
+    else:
+        raw_date = _safe_accessory_filename_part(order_date)
+        digits = re.sub(r'\D+', '', raw_date)
+        date_part = digits if len(digits) == 8 else raw_date
+
+    return f"{code_part} {style_part} {factory_part} {date_part}.xlsx"
 
 def render_accessory_order(uname):
     """渲染辅料下单界面"""
@@ -98,15 +128,32 @@ def render_accessory_order(uname):
                     
                     # 调用 Excel 引擎
                     excel_bytes, missing_69_count = generate_accessory_excel(uploaded_wdt, params)
-                    
+
+                    # 生成下载文件名：内部码 款式名称 工厂名称 日期.xlsx
+                    download_filename = _format_accessory_output_filename(
+                        internal_code=internal_code,
+                        accessory_type=accessory_type,
+                        selected_factory_name=selected_factory_name,
+                        order_date=acc_order_date
+                    )
+
+                    # 历史记录里也保存同一个输出文件名
+                    params['output_filename'] = download_filename
+
                     # 5. 自动归档历史记录
                     save_accessory_history(uploaded_wdt, params, excel_bytes, uname)
 
                     st.success("🎉 生成成功并已自动归档！")
                     if has_69 == '有' and missing_69_count > 0:
                         st.warning(f"⚠️ 提示：有 {missing_69_count} 个条码未匹配到 69 码。")
-                        
-                    st.download_button("📥 下载辅料下单表", excel_bytes, f"辅料单_{selected_factory_name}.xlsx", type="primary")
+
+                    st.download_button(
+                        label="📥 下载辅料下单表",
+                        data=excel_bytes,
+                        file_name=download_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary"
+                    )
                 except Exception as e:
                     st.error(f"处理失败: {e}")
 
@@ -143,10 +190,10 @@ def save_accessory_history(uploaded_file, params, excel_bytes, uname):
                      (create_time, order_date, operator, factory_name, file_name, excel_data,
                       item_no, product_name, acc_style, total_qty, internal_code, material_info) 
                      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''', 
-                  (create_time, str(params['order_date']), uname, params['selected_factory_name'], 
-                   f"辅料单_{params['selected_factory_name']}.xlsx", excel_bytes, 
-                   item_no_val, p_name_val, params['accessory_type'], total_q_val, 
-                   params['internal_code'], params['material_text']))
+                    (create_time, str(params['order_date']), uname, params['selected_factory_name'], 
+                    params.get('output_filename', f"辅料单_{params['selected_factory_name']}.xlsx"), excel_bytes, 
+                    item_no_val, p_name_val, params['accessory_type'], total_q_val, 
+                    params['internal_code'], params['material_text']))
         conn.commit()
                     # 辅料下单成功后，异步同步到飞书多维表格
         try:
