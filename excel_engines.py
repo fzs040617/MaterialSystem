@@ -6,7 +6,7 @@ import os
 import datetime
 import numpy as np
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Side, Font
+from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as xlImage
 import base64
@@ -133,21 +133,33 @@ def _generate_single_other_mat_excel(items, src_factory, g_df):
 # ==========================================
 # 2. 辅料下单表引擎
 # ==========================================
-
 def generate_accessory_excel(uploaded_file, params):
     """清洗旺店通数据并生成辅料下单表"""
     file_ext = os.path.splitext(uploaded_file.name)[1].lower()
     df = pd.read_csv(uploaded_file) if file_ext == '.csv' else pd.read_excel(uploaded_file)
+    df.columns = [str(col).strip() for col in df.columns]
+
     required_cols = ['商家编码', '货品编号', '货品名称', '规格名称', '规格码', '采购确认量', '零售价格', '平台']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"原表单缺少必要列：{', '.join(missing_cols)}")
 
-    df = df[required_cols].copy()
+    optional_cols = ['采购量'] if '采购量' in df.columns else []
+    df = df[required_cols + optional_cols].copy()
+
     df['采购确认量'] = pd.to_numeric(df['采购确认量'], errors='coerce')
     df = df.dropna(subset=['采购确认量'])
+    if df.empty:
+        raise ValueError("原表单采购确认量无有效数据")
+
     df['吊牌采购量'] = df['采购确认量'].astype(int)
-    df['货品名称'] = df['货品名称'].astype(str).str.replace(r'\(VIP\)|（VIP）', '', regex=True).str.strip()
+    df['货品名称'] = (
+        df['货品名称']
+        .fillna('')
+        .astype(str)
+        .str.replace(r'\(VIP\)|（VIP）', '', regex=True)
+        .str.strip()
+    )
 
     if params['has_wash'] == '有':
         wash_multiplier = 2 if params.get('is_two_pack') == '是' else 1
@@ -157,6 +169,7 @@ def generate_accessory_excel(uploaded_file, params):
 
     out_cols = {}
     missing_69_count = 0
+
     if params['has_69'] == '有':
         out_cols['69码'] = ''
 
@@ -166,14 +179,31 @@ def generate_accessory_excel(uploaded_file, params):
         '货品名称': df['货品名称'],
         '规格名称': df['规格名称'],
         '规格码': df['规格码'],
+    })
+
+    if '采购量' in df.columns:
+        out_cols['采购量'] = df['采购量']
+
+    out_cols.update({
         '吊牌采购量': df['吊牌采购量'],
         '洗水唛采购量': df['洗水唛采购量'],
         '零售价格': df['零售价格'],
         '平台': df['平台'],
-        '采购单查询码': params['internal_code'],
-        '辅料款式': params.get('accessory_type', '')
+        '内部码': params['internal_code']
     })
+
+    def clean_excel_value(value):
+        if pd.isna(value):
+            return ''
+        text = str(value).strip()
+        return '' if text.lower() == 'nan' else text
+
     df_out = pd.DataFrame(out_cols)
+    df_out = df_out.replace({np.nan: '', pd.NA: '', None: ''})
+    df_out = df_out.apply(
+        lambda col: col.map(lambda x: '' if isinstance(x, str) and x.strip().lower() == 'nan' else x)
+        if col.dtype == object else col
+    )
 
     def get_standard_info(product_name):
         rules = [
@@ -193,30 +223,65 @@ def generate_accessory_excel(uploaded_file, params):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_out.to_excel(writer, index=False, sheet_name='辅料下单表')
         ws = writer.sheets['辅料下单表']
+
         offset_col = ws.max_column + 2
-        ws.cell(row=1, column=offset_col, value=params['material_text'])
+
+        header_fill = PatternFill("solid", fgColor="9999FF")
+        yellow_fill = PatternFill("solid", fgColor="FFFF00")
+        header_font = Font(bold=True)
+
+        for cell in ws[1]:
+            if cell.value:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
         first_row = df.iloc[0]
         template_name, std_val = get_standard_info(str(first_row.get('货品名称', '')))
+        internal_code = clean_excel_value(params.get('internal_code', ''))
+
         tag_data = [
             "润微",
             f"名称：{template_name}",
-            f"货号：{first_row.get('货品编号', '')}",
-            f"号型：{first_row.get('规格码', '')}",
-            f"颜色：{first_row.get('规格名称', '')}",
-            f"商品价：{first_row.get('零售价格', '')}",
+            f"货号：{clean_excel_value(first_row.get('货品编号', ''))}",
+            f"号型：{clean_excel_value(first_row.get('规格码', ''))}",
+            f"颜色：{clean_excel_value(first_row.get('规格名称', ''))}",
+            f"商品价：{clean_excel_value(first_row.get('零售价格', ''))}",
             f"执行标准：{std_val}"
         ]
-        for i, text in enumerate(tag_data): ws.cell(row=2+i, column=offset_col, value=text)
-        
-        summary_row = len(df_out) + 3
-        tag_qty = int(df_out['吊牌采购量'].sum())
-        wash_qty = int(df_out['洗水唛采购量'].sum())
+
+        for i, text in enumerate(tag_data):
+            cell = ws.cell(row=1 + i, column=offset_col, value=text)
+            if i in (0, 6):
+                cell.fill = yellow_fill
+            if i == 0:
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        # 右侧区域两个内部码：润微左边一个，执行标准右边一个
+        if internal_code:
+            ws.cell(row=1, column=offset_col - 1, value=f"内部码：{internal_code}")
+            ws.cell(row=7, column=offset_col + 1, value=f"内部码：{internal_code}")
+
+        material_text = clean_excel_value(params.get('material_text', ''))
+        if material_text:
+            ws.cell(row=len(tag_data) + 2, column=offset_col, value=f"材质：{material_text}")
+
+        summary_row = max(len(df_out) + 3, len(tag_data) + 4)
+        tag_qty = int(df['吊牌采购量'].sum())
+        wash_qty = int(df['洗水唛采购量'].sum())
+
         ws.cell(row=summary_row, column=1, value=f"吊牌总采购量：{tag_qty}")
         ws.cell(row=summary_row + 1, column=1, value=f"洗水唛总采购量：{wash_qty}")
         ws.cell(row=summary_row + 2, column=1, value=f"收件信息：{params['selected_factory_addr']}")
-        adjust_column_width(ws)
-    return output.getvalue(), missing_69_count
 
+        ws.column_dimensions[get_column_letter(offset_col - 1)].width = 22
+        ws.column_dimensions[get_column_letter(offset_col)].width = 28
+        ws.column_dimensions[get_column_letter(offset_col + 1)].width = 22
+
+        adjust_column_width(ws)
+
+    return output.getvalue(), missing_69_count
 # ==========================================
 # 3. 采购合同与库存报表引擎
 # ==========================================
