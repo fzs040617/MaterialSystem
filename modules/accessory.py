@@ -7,6 +7,7 @@ import threading
 from sync_history_to_feishu import migrate_accessory_history_to_feishu
 from database import get_db_conn, load_data
 from excel_engines import generate_accessory_excel
+from rpa_bridge import load_accessory_rpa_result, open_file_for_streamlit_upload
 
 def _safe_accessory_filename_part(value):
     """清理辅料下单下载文件名片段"""
@@ -37,6 +38,25 @@ def _format_accessory_output_filename(internal_code, accessory_type, selected_fa
         date_part = digits if len(digits) == 8 else raw_date
 
     return f"{code_part} {style_part} {factory_part} {date_part}.xlsx"
+
+
+def _generate_accessory_from_source(source_file, params, uname):
+    excel_bytes, missing_69_count = generate_accessory_excel(source_file, params)
+
+    download_filename = _format_accessory_output_filename(
+        internal_code=params.get("internal_code", ""),
+        accessory_type=params.get("accessory_type", ""),
+        selected_factory_name=params.get("selected_factory_name", ""),
+        order_date=params.get("order_date", datetime.date.today())
+    )
+
+    params["output_filename"] = download_filename
+
+    if hasattr(source_file, "seek"):
+        source_file.seek(0)
+    save_accessory_history(source_file, params, excel_bytes, uname)
+
+    return excel_bytes, missing_69_count, download_filename
 
 def render_accessory_order(uname):
     """渲染辅料下单界面"""
@@ -103,6 +123,10 @@ def render_accessory_order(uname):
     st.subheader("📤 3. 上传基础表并生成")
     uploaded_wdt = st.file_uploader("上传旺店通表格 (.xls / .xlsx / .csv)", type=['xls', 'xlsx', 'csv'])
 
+    st.subheader("🤖 RPA 结果生成（测试）")
+    st.info("请先运行影刀 RPA，让它把旺店通原表下载到固定目录并写入 result.json。09:00-10:00、14:00-15:00 不建议运行 RPA。手动上传入口仍保留作为兜底。")
+    rpa_result_btn = st.button("读取 RPA 结果并生成辅料下单表", use_container_width=True)
+
     if st.button("🚀 开始生成辅料下单表", type="primary", use_container_width=True):
         if not uploaded_wdt:
             st.error("❌ 请先上传表格！")
@@ -125,23 +149,9 @@ def render_accessory_order(uname):
                         'selected_factory_addr': selected_factory_addr,
                         'selected_factory_name': selected_factory_name
                     }
-                    
-                    # 调用 Excel 引擎
-                    excel_bytes, missing_69_count = generate_accessory_excel(uploaded_wdt, params)
-
-                    # 生成下载文件名：内部码 款式名称 工厂名称 日期.xlsx
-                    download_filename = _format_accessory_output_filename(
-                        internal_code=internal_code,
-                        accessory_type=accessory_type,
-                        selected_factory_name=selected_factory_name,
-                        order_date=acc_order_date
+                    excel_bytes, missing_69_count, download_filename = _generate_accessory_from_source(
+                        uploaded_wdt, params, uname
                     )
-
-                    # 历史记录里也保存同一个输出文件名
-                    params['output_filename'] = download_filename
-
-                    # 5. 自动归档历史记录
-                    save_accessory_history(uploaded_wdt, params, excel_bytes, uname)
 
                     st.success("🎉 生成成功并已自动归档！")
                     if has_69 == '有' and missing_69_count > 0:
@@ -156,6 +166,48 @@ def render_accessory_order(uname):
                     )
                 except Exception as e:
                     st.error(f"处理失败: {e}")
+
+    if rpa_result_btn:
+        if not internal_code.strip():
+            st.error("请先填写采购单查询码")
+        elif not selected_factory_name:
+            st.error("❌ 请勾选收货制衣厂！")
+        else:
+            with st.spinner("🤖 正在读取 RPA 结果..."):
+                try:
+                    rpa_result = load_accessory_rpa_result(expected_internal_code=internal_code.strip())
+                    if not rpa_result["ok"]:
+                        st.error(rpa_result["message"])
+                    else:
+                        file_obj = open_file_for_streamlit_upload(rpa_result["file_path"])
+                        params = {
+                            'order_date': acc_order_date,
+                            'has_69': has_69,
+                            'has_wash': has_wash,
+                            'wash_material': wash_material,
+                            'is_two_pack': is_two_pack,
+                            'accessory_type': accessory_type,
+                            'internal_code': internal_code,
+                            'material_text': material_text,
+                            'selected_factory_addr': selected_factory_addr,
+                            'selected_factory_name': selected_factory_name
+                        }
+                        excel_bytes, missing_69_count, download_filename = _generate_accessory_from_source(
+                            file_obj, params, uname
+                        )
+                        st.success(f"🎉 {rpa_result['message']}")
+                        if has_69 == '有' and missing_69_count > 0:
+                            st.warning(f"⚠️ 提示：有 {missing_69_count} 个条码未匹配到 69 码。")
+                        st.download_button(
+                            label="📥 下载辅料下单表",
+                            data=excel_bytes,
+                            file_name=download_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary",
+                            key="download_rpa_accessory"
+                        )
+                except Exception as e:
+                    st.error(f"读取 RPA 结果失败: {e}")
 
 def save_accessory_history(uploaded_file, params, excel_bytes, uname):
     """【内部逻辑】辅助函数：解析上传文件并保存至数据库历史"""

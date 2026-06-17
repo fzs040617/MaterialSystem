@@ -30,6 +30,7 @@ downloads/
 
 # Images and real business data
 images/
+rpa_runtime/
 
 # Office temp files
 ~$*
