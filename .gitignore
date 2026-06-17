@@ -48,3 +48,9 @@ config.py
 *.xlsx
 *.xls
 *.csv
+
+# Manual backup files
+*.bak
+*.bak_*
+*.backup
+*.old
