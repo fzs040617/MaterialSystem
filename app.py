@@ -1,6 +1,84 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sys
 import os
+
+def inject_login_keyboard_shortcuts():
+    """登录页快捷键：上下箭头切换账号/密码输入框，Enter 提交登录表单"""
+    components.html(
+        """
+        <script>
+        function getVisibleLoginInputs() {
+            const doc = window.parent.document;
+            const inputs = Array.from(doc.querySelectorAll('input'));
+
+            const visibleInputs = inputs.filter(el => {
+                const rect = el.getBoundingClientRect();
+                const style = window.parent.getComputedStyle(el);
+                return (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    style.display !== "none" &&
+                    style.visibility !== "hidden" &&
+                    !el.disabled
+                );
+            });
+
+            // 登录页当前可见的账号、密码输入框
+            return visibleInputs.slice(0, 2);
+        }
+
+        function setupLoginShortcuts() {
+            const doc = window.parent.document;
+
+            if (doc.body.dataset.loginShortcutBound === "1") {
+                return;
+            }
+            doc.body.dataset.loginShortcutBound = "1";
+
+            // 默认聚焦账号框
+            setTimeout(() => {
+                const inputs = getVisibleLoginInputs();
+                if (inputs.length >= 1) {
+                    try {
+                        inputs[0].focus();
+                    } catch (e) {}
+                }
+            }, 500);
+
+            doc.addEventListener("keydown", function(e) {
+                const inputs = getVisibleLoginInputs();
+                if (inputs.length < 2) {
+                    return;
+                }
+
+                const usernameInput = inputs[0];
+                const passwordInput = inputs[1];
+                const active = doc.activeElement;
+
+                if (e.key === "ArrowDown") {
+                    if (active === usernameInput) {
+                        e.preventDefault();
+                        passwordInput.focus();
+                    }
+                }
+
+                if (e.key === "ArrowUp") {
+                    if (active === passwordInput) {
+                        e.preventDefault();
+                        usernameInput.focus();
+                    }
+                }
+
+                // Enter 由 st.form_submit_button 原生提交，不在 JS 里强行点击
+            });
+        }
+
+        setupLoginShortcuts();
+        </script>
+        """,
+        height=0,
+    )
 
 # 将当前目录添加到系统路径，确保子模块导入正常
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -34,24 +112,35 @@ if 'role' not in st.session_state: st.session_state['role'] = ''
 def login_page():
     st.markdown("<h1 style='text-align: center;'>🔐 物料系统登录</h1>", unsafe_allow_html=True)
     t1, t2 = st.tabs(["登录", "注册"])
+
     with t1:
-        u = st.text_input("账号")
-        p = st.text_input("密码", type="password")
-        if st.button("登录", type="primary", use_container_width=True):
+        inject_login_keyboard_shortcuts()
+
+        with st.form("login_form", clear_on_submit=False):
+            u = st.text_input("账号", key="login_username")
+            p = st.text_input("密码", type="password", key="login_password")
+            submitted = st.form_submit_button("登录", type="primary", use_container_width=True)
+
+        if submitted:
             role = login_user(u, p)
             if role:
                 st.session_state.update({'logged_in': True, 'username': u, 'role': role})
                 st.rerun()
-            else: st.error("账号或密码错误")
-    with t2:
-        nu = st.text_input("新账号")
-        np = st.text_input("新密码", type="password")
-        nr = st.selectbox("角色", ["sales", "warehouse"])
-        ic = st.text_input("邀请码")
-        if st.button("注册", use_container_width=True):
-            if ic != INVITATION_CODE: st.error("邀请码错误")
-            elif register_user(nu, np, nr): st.success("注册成功，请登录"); st.rerun()
+            else:
+                st.error("账号或密码错误")
 
+    with t2:
+        nu = st.text_input("新账号", key="register_username")
+        np = st.text_input("新密码", type="password", key="register_password")
+        nr = st.selectbox("角色", ["sales", "warehouse"], key="register_role")
+        ic = st.text_input("邀请码", key="register_invitation_code")
+
+        if st.button("注册", use_container_width=True, key="register_button"):
+            if ic != INVITATION_CODE:
+                st.error("邀请码错误")
+            elif register_user(nu, np, nr):
+                st.success("注册成功，请登录")
+                st.rerun()
 # 4. 主程序路由
 def main():
     role = st.session_state['role']

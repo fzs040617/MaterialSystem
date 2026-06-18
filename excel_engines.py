@@ -4,6 +4,7 @@ import json
 import zipfile
 import os
 import datetime
+import re
 import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
@@ -180,6 +181,113 @@ def generate_accessory_excel(uploaded_file, params):
         .str.strip()
     )
 
+    def clean_excel_value(value):
+        if pd.isna(value):
+            return ''
+        text = str(value).strip()
+        return '' if text.lower() == 'nan' else text
+
+    def format_size_text(value):
+        """规格码/号型格式：155/75(M+)，去掉 =\"...\" 或 =“...” 外壳"""
+        text = clean_excel_value(value)
+        if not text:
+            return ''
+
+        text = text.strip()
+
+        # 去掉前面因为防公式注入加上的单引号
+        if text.startswith("'"):
+            text = text[1:].strip()
+
+        # 处理 ="155/75(M+)"、=“155/75(M+)”、=155/75(M+)
+        if text.startswith("="):
+            text = text[1:].strip()
+
+        # 去掉首尾各种引号
+        text = text.strip()
+        text = text.strip('"')
+        text = text.strip("'")
+        text = text.strip('“')
+        text = text.strip('”')
+
+        return text.strip()
+
+    def format_price_with_rmb(value):
+        """执行标准商品价格式：¥238，避免出现 238.0"""
+        rmb_symbol = chr(165)  # 半角人民币/日元符号：¥
+
+        text = clean_excel_value(value)
+        if not text:
+            return ''
+
+        normalized = (
+            text.replace('￥', '')
+            .replace('¥', '')
+            .replace(chr(65509), '')  # 去掉全角 ￥
+            .replace(chr(165), '')    # 去掉半角 ¥
+            .replace(',', '')
+            .strip()
+        )
+
+        if not normalized or normalized.lower() == 'nan':
+            return ''
+
+        try:
+            price_num = float(normalized)
+        except (TypeError, ValueError):
+            return f"{rmb_symbol}{normalized}"
+
+        if abs(price_num - round(price_num)) < 1e-9:
+            return f"{rmb_symbol}{int(round(price_num))}"
+
+        price_text = f"{price_num:.10f}".rstrip('0').rstrip('.')
+        return f"{rmb_symbol}{price_text}"
+    
+    def format_summary_qty(value):
+        """底部汇总数量格式：367个，避免 367.0个"""
+        try:
+            num = float(value)
+            if abs(num - round(num)) < 1e-9:
+                return str(int(round(num)))
+            return str(num).rstrip('0').rstrip('.')
+        except Exception:
+            return clean_excel_value(value)
+
+    def get_accessory_summary_name(value):
+        """底部汇总名称：显示完整辅料款式名称"""
+        text = clean_excel_value(value)
+        return text or "吊牌"
+    
+    def split_material_lines(value, max_lines=4):
+        """洗水唛材质表：按行拆分，最多保留4行"""
+        text = clean_excel_value(value)
+        if not text:
+            return []
+
+        lines = []
+        for line in str(text).splitlines():
+            line = line.strip()
+            if line:
+                lines.append(line)
+
+        return lines[:max_lines]
+
+    def get_wash_label_image_path():
+        """查找洗水唛有斜杠提示图片"""
+        image_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "accessory_templates")
+        filenames = [
+            "洗水唛有斜杠.png",
+            "洗水唛有斜杠.jpg",
+            "洗水唛有斜杠.jpeg",
+        ]
+
+        for filename in filenames:
+            image_path = os.path.join(image_dir, filename)
+            if os.path.exists(image_path):
+                return image_path
+
+        return ""
+
     if params['has_wash'] == '有':
         wash_multiplier = 2 if params.get('is_two_pack') == '是' else 1
         df['洗水唛采购量'] = df['吊牌采购量'] * wash_multiplier
@@ -197,11 +305,14 @@ def generate_accessory_excel(uploaded_file, params):
         '货品编号': df['货品编号'],
         '货品名称': df['货品名称'],
         '规格名称': df['规格名称'],
-        '规格码': df['规格码'],
+        '规格码': df['规格码'].map(format_size_text),
     })
 
+    # 采购量仅作为显示列，不参与吊牌/洗水唛数量计算
     if '采购量' in df.columns:
         out_cols['采购量'] = df['采购量']
+    else:
+        out_cols['采购量'] = df['采购确认量']
 
     out_cols.update({
         '吊牌采购量': df['吊牌采购量'],
@@ -210,12 +321,6 @@ def generate_accessory_excel(uploaded_file, params):
         '平台': df['平台'],
         '内部码': params['internal_code']
     })
-
-    def clean_excel_value(value):
-        if pd.isna(value):
-            return ''
-        text = str(value).strip()
-        return '' if text.lower() == 'nan' else text
 
     def get_accessory_image_path(accessory_type):
         """按辅料款式匹配本地图片"""
@@ -235,7 +340,10 @@ def generate_accessory_excel(uploaded_file, params):
     df_out = pd.DataFrame(out_cols)
     df_out = df_out.replace({np.nan: '', pd.NA: '', None: ''})
     df_out = df_out.apply(
-        lambda col: col.map(lambda x: '' if isinstance(x, str) and x.strip().lower() == 'nan' else x)
+        lambda col: col.map(
+            lambda x: '' if isinstance(x, str) and x.strip().lower() == 'nan'
+            else (f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
+        )
         if col.dtype == object else col
     )
 
@@ -274,50 +382,102 @@ def generate_accessory_excel(uploaded_file, params):
         template_name, std_val = get_standard_info(str(first_row.get('货品名称', '')))
         internal_code = clean_excel_value(params.get('internal_code', ''))
 
+        material_text = clean_excel_value(params.get('material_text', ''))
+        material_lines = []
+        if params.get('has_wash') == '有':
+            material_lines = split_material_lines(material_text)
+
+        standard_start_row = 1
+
+        # 右侧上方：洗水唛材质表，仅洗水唛=有且用户填写材质表时输出
+        if material_lines:
+            wash_start_row = 1
+
+            cell = ws.cell(row=wash_start_row, column=offset_col, value="润微")
+            cell.fill = yellow_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            for idx, line in enumerate(material_lines, start=1):
+                material_cell = ws.cell(row=wash_start_row + idx, column=offset_col, value=line)
+                material_cell.alignment = Alignment(horizontal='left', vertical='center')
+
+            warn_cell = ws.cell(row=wash_start_row, column=offset_col + 1, value="洗水唛有斜杠")
+            warn_cell.fill = yellow_fill
+            warn_cell.font = Font(bold=True, color="FF0000", size=18)
+            warn_cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            wash_image_path = get_wash_label_image_path()
+            if wash_image_path:
+                try:
+                    img = xlImage(wash_image_path)
+                    img.width = 180
+                    img.height = 90
+                    ws.add_image(img, f"{get_column_letter(offset_col + 1)}{wash_start_row + 1}")
+
+                    for row_idx in range(wash_start_row + 1, wash_start_row + 6):
+                        ws.row_dimensions[row_idx].height = 20
+                except Exception as e:
+                    ws.cell(row=wash_start_row + 1, column=offset_col + 1, value=f"洗水唛图片插入失败：{e}")
+            else:
+                ws.cell(row=wash_start_row + 1, column=offset_col + 1, value="洗水唛标识图片未找到")
+
+            # 给图片和材质表预留空间，执行标准区域整体下移
+            standard_start_row = wash_start_row + max(len(material_lines) + 1, 6) + 1
+
+        # 右侧执行标准区域：根据上方洗水唛材质表动态下移
         tag_data = [
             "润微",
             f"名称：{template_name}",
             f"货号：{clean_excel_value(first_row.get('货品编号', ''))}",
-            f"号型：{clean_excel_value(first_row.get('规格码', ''))}",
+            f"号型：{format_size_text(first_row.get('规格码', ''))}",
             f"颜色：{clean_excel_value(first_row.get('规格名称', ''))}",
-            f"商品价：{clean_excel_value(first_row.get('零售价格', ''))}",
+            f"商品价：{format_price_with_rmb(first_row.get('零售价格', ''))}",
             f"执行标准：{std_val}"
         ]
 
         for i, text in enumerate(tag_data):
-            cell = ws.cell(row=1 + i, column=offset_col, value=text)
-            if i in (0, 6):
+            cell = ws.cell(row=standard_start_row + i, column=offset_col, value=text)
+            if i in (0, len(tag_data) - 1):
                 cell.fill = yellow_fill
             if i == 0:
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal='center', vertical='center')
 
-        # 右侧区域两个内部码：润微左边一个，执行标准右边一个
+        # 仅保留执行标准右侧内部码，位置跟随执行标准区域动态下移
         if internal_code:
-            ws.cell(row=1, column=offset_col - 1, value=f"内部码：{internal_code}")
-            ws.cell(row=7, column=offset_col + 1, value=f"内部码：{internal_code}")
+            ws.cell(
+                row=standard_start_row + len(tag_data) - 1,
+                column=offset_col + 1,
+                value=f"内部码：{internal_code}"
+            )
 
-        material_text = clean_excel_value(params.get('material_text', ''))
-        if material_text:
-            ws.cell(row=len(tag_data) + 2, column=offset_col, value=f"材质：{material_text}")
-
-        summary_row = max(len(df_out) + 3, len(tag_data) + 4)
+        summary_row = max(len(df_out) + 3, standard_start_row + len(tag_data) + 3)
         tag_qty = int(df['吊牌采购量'].sum())
         wash_qty = int(df['洗水唛采购量'].sum())
         accessory_type = clean_excel_value(params.get('accessory_type', ''))
         selected_factory_addr = clean_excel_value(params.get('selected_factory_addr', ''))
+        accessory_summary_name = get_accessory_summary_name(accessory_type)
 
         current_row = summary_row
-        ws.cell(row=current_row, column=1, value=f"吊牌总采购量：{tag_qty}")
+
+        # 底部汇总：按实际吊牌款式显示，不再单独写“吊牌总采购量 / 辅料款式 / 吊牌材质”
+        ws.cell(
+            row=current_row,
+            column=1,
+            value=f"{accessory_summary_name}：{format_summary_qty(tag_qty)}个"
+        )
         current_row += 1
 
-        ws.cell(row=current_row, column=1, value=f"洗水唛总采购量：{wash_qty}")
+        ws.cell(
+            row=current_row,
+            column=1,
+            value=f"洗水唛：{format_summary_qty(wash_qty)}个"
+        )
         current_row += 1
 
+        # 图片仍按辅料款式插入，但不再额外输出“辅料款式：xxx”
         if accessory_type:
-            ws.cell(row=current_row, column=1, value=f"辅料款式：{accessory_type}")
-            current_row += 1
-
             image_path = get_accessory_image_path(accessory_type)
             if image_path:
                 try:

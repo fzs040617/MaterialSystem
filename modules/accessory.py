@@ -58,10 +58,31 @@ def _generate_accessory_from_source(source_file, params, uname):
 
     return excel_bytes, missing_69_count, download_filename
 
+def _reset_accessory_form_state():
+    """下载辅料下单表后，重置辅料下单页面，避免下一张单沿用上一张信息"""
+    fixed_keys = [
+        "acc_order_date",
+        "acc_has_69",
+        "acc_has_wash",
+        "acc_wash_material",
+        "acc_accessory_type",
+        "acc_internal_code",
+        "acc_material_text",
+        "acc_is_two_pack",
+    ]
+
+    for key in fixed_keys:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    # 这些组件用动态 key，递增后会强制刷新为空
+    st.session_state["acc_form_reset_token"] = st.session_state.get("acc_form_reset_token", 0) + 1
+
 def render_accessory_order(uname):
     """渲染辅料下单界面"""
     st.header("🖨️ 辅料下单表自动生成")
     st.caption("上传旺店通基础表，一键匹配69码并生成辅料厂标准下单格式。")
+    reset_token = st.session_state.get("acc_form_reset_token", 0)
     
     # 1. 订单元数据配置
     c_meta = st.columns(2)
@@ -73,20 +94,59 @@ def render_accessory_order(uname):
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("**国际条码 (69码)**")
-        has_69 = st.radio("是否有69码", ["无", "有"], horizontal=True, label_visibility="collapsed")
+        has_69 = st.radio(
+            "是否有69码",
+            ["无", "有"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="acc_has_69"
+        )
     with c2:
         st.markdown("**洗水唛**")
-        has_wash = st.radio("是否有洗水唛", ["无", "有"], horizontal=True, label_visibility="collapsed")
-        wash_material = st.radio("洗水唛材料", ["胶带（唯品/三野）", "布带（天猫/抖音）"], horizontal=True) if has_wash == "有" else None
+        has_wash = st.radio(
+            "是否有洗水唛",
+            ["无", "有"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="acc_has_wash"
+        )
+        wash_material = st.radio(
+            "洗水唛材料",
+            ["胶带（唯品/三野）", "布带（天猫/抖音）"],
+            horizontal=True,
+            key="acc_wash_material"
+        ) if has_wash == "有" else None        
     with c3:
         st.markdown("**辅料款式 (必选)**")
-        accessory_type = st.radio("款式", ["绿色吊牌+吊粒", "五张新吊牌+防伪带", "贴纸"], horizontal=True, label_visibility="collapsed")
-
+        accessory_type = st.radio(
+            "款式",
+            ["绿色吊牌+吊粒", "五张新吊牌+防伪带", "贴纸"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="acc_accessory_type"
+        )
     c4, c5 = st.columns(2)
-    internal_code = c4.text_input("采购单查询码 (必填)", placeholder="例如: CG260206012")
-    material_text = c5.text_input("材质表 (选填)", placeholder="例如: 锦纶79.5% 氨纶20.5%")
-    is_two_pack = st.radio("是否两件装", ["否", "是"], horizontal=True, index=0)
-
+    internal_code = c4.text_input(
+        "采购单查询码 (必填)",
+        placeholder="例如: CG260206012",
+        key="acc_internal_code"
+    )    
+    if has_wash == "有":
+        material_text = c5.text_area(
+            "洗水唛材质表（选填，最多4行）",
+            placeholder="例如：\n锦纶79.5%\n氨纶20.5%",
+            height=90,
+            key="acc_material_text"
+        )
+    else:
+        material_text = ""
+    is_two_pack = st.radio(
+        "是否两件装",
+        ["否", "是"],
+        horizontal=True,
+        index=0,
+        key="acc_is_two_pack"
+    )
     # 3. 制衣厂选择逻辑
     st.subheader("🏭 2. 选择收货制衣厂")
     df_g = load_data("garment_factories")
@@ -97,18 +157,21 @@ def render_accessory_order(uname):
         st.warning("⚠️ 请先去后台添加制衣厂数据")
     else:
         factory_list = df_g['name'].tolist()
-        quick_search_acc = st.multiselect("🔍 快速搜索", options=factory_list, key="search_fac_accessory")
-        
+        quick_search_acc = st.multiselect(
+            "🔍 快速搜索",
+            options=factory_list,
+            key=f"search_fac_accessory_{reset_token}"
+        )        
         df_display_acc = df_g[['name']].copy()
         df_display_acc.insert(0, "✅", df_display_acc['name'].isin(quick_search_acc))
 
         edited_gf = st.data_editor(
             df_display_acc,
-            key="editor_accessory",
+            key=f"editor_accessory_{reset_token}",
             column_config={"✅": st.column_config.CheckboxColumn("选", width="small")},
             hide_index=True,
             use_container_width=True,
-            height=200
+            height=145
         )
         
         selected_rows = edited_gf[edited_gf["✅"] == True]
@@ -119,67 +182,26 @@ def render_accessory_order(uname):
             selected_factory_addr = f"{selected_factory_name}：{raw_addr}" if raw_addr else selected_factory_name
             st.success(f"📍 **收件信息:** {selected_factory_addr}")
 
-    # 4. 文件上传与生成引擎调用
-    st.subheader("📤 3. 上传基础表并生成")
-    uploaded_wdt = st.file_uploader("上传旺店通表格 (.xls / .xlsx / .csv)", type=['xls', 'xlsx', 'csv'])
+    # 4. 文件上传与生成引擎调用：压缩为 Tab，减少页面上下滚动
+    manual_tab, rpa_tab = st.tabs(["📤 上传生成", "🤖 RPA结果生成"])
 
-    st.subheader("🤖 RPA 结果生成（测试）")
-    st.info("请先运行影刀 RPA，让它把旺店通原表下载到固定目录并写入 result.json。09:00-10:00、14:00-15:00 不建议运行 RPA。手动上传入口仍保留作为兜底。")
-    rpa_result_btn = st.button("读取 RPA 结果并生成辅料下单表", use_container_width=True)
+    with manual_tab:
+        uploaded_wdt = st.file_uploader(
+            "上传旺店通表格 (.xls / .xlsx / .csv)",
+            type=['xls', 'xlsx', 'csv'],
+            key=f"uploaded_wdt_accessory_{reset_token}"
+        )
 
-    if st.button("🚀 开始生成辅料下单表", type="primary", use_container_width=True):
-        if not uploaded_wdt:
-            st.error("❌ 请先上传表格！")
-        elif not internal_code.strip():
-            st.error("请先填写采购单查询码")
-        elif not selected_factory_name:
-            st.error("❌ 请勾选收货制衣厂！")
-        else:
-            with st.spinner("⚙️ 正在执行数据转化..."):
-                try:
-                    params = {
-                        'order_date': acc_order_date,
-                        'has_69': has_69,
-                        'has_wash': has_wash,
-                        'wash_material': wash_material,
-                        'is_two_pack': is_two_pack,
-                        'accessory_type': accessory_type,
-                        'internal_code': internal_code,
-                        'material_text': material_text,
-                        'selected_factory_addr': selected_factory_addr,
-                        'selected_factory_name': selected_factory_name
-                    }
-                    excel_bytes, missing_69_count, download_filename = _generate_accessory_from_source(
-                        uploaded_wdt, params, uname
-                    )
-
-                    st.success("🎉 生成成功并已自动归档！")
-                    if has_69 == '有' and missing_69_count > 0:
-                        st.warning(f"⚠️ 提示：有 {missing_69_count} 个条码未匹配到 69 码。")
-
-                    st.download_button(
-                        label="📥 下载辅料下单表",
-                        data=excel_bytes,
-                        file_name=download_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
-                    )
-                except Exception as e:
-                    st.error(f"处理失败: {e}")
-
-    if rpa_result_btn:
-        if not internal_code.strip():
-            st.error("请先填写采购单查询码")
-        elif not selected_factory_name:
-            st.error("❌ 请勾选收货制衣厂！")
-        else:
-            with st.spinner("🤖 正在读取 RPA 结果..."):
-                try:
-                    rpa_result = load_accessory_rpa_result(expected_internal_code=internal_code.strip())
-                    if not rpa_result["ok"]:
-                        st.error(rpa_result["message"])
-                    else:
-                        file_obj = open_file_for_streamlit_upload(rpa_result["file_path"])
+        if st.button("🚀 开始生成辅料下单表", type="primary", use_container_width=True, key="btn_manual_accessory"):
+            if not uploaded_wdt:
+                st.error("❌ 请先上传表格！")
+            elif not internal_code.strip():
+                st.error("请先填写采购单查询码")
+            elif not selected_factory_name:
+                st.error("❌ 请勾选收货制衣厂！")
+            else:
+                with st.spinner("⚙️ 正在执行数据转化..."):
+                    try:
                         params = {
                             'order_date': acc_order_date,
                             'has_69': has_69,
@@ -193,22 +215,77 @@ def render_accessory_order(uname):
                             'selected_factory_name': selected_factory_name
                         }
                         excel_bytes, missing_69_count, download_filename = _generate_accessory_from_source(
-                            file_obj, params, uname
+                            uploaded_wdt, params, uname
                         )
-                        st.success(f"🎉 {rpa_result['message']}")
+
+                        st.success("🎉 生成成功并已自动归档！")
                         if has_69 == '有' and missing_69_count > 0:
                             st.warning(f"⚠️ 提示：有 {missing_69_count} 个条码未匹配到 69 码。")
+
                         st.download_button(
                             label="📥 下载辅料下单表",
                             data=excel_bytes,
                             file_name=download_filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             type="primary",
-                            key="download_rpa_accessory"
+                            key="download_manual_accessory",
+                            on_click=_reset_accessory_form_state
                         )
-                except Exception as e:
-                    st.error(f"读取 RPA 结果失败: {e}")
+                    except Exception as e:
+                        st.error(f"处理失败: {e}")
 
+    with rpa_tab:
+        st.info("先运行影刀 RPA，再点下方按钮读取 result.json。")
+
+        rpa_result_btn = st.button(
+            "读取 RPA 结果并生成辅料下单表",
+            use_container_width=True,
+            key="btn_rpa_accessory"
+        )
+
+        if rpa_result_btn:
+            if not internal_code.strip():
+                st.error("请先填写采购单查询码")
+            elif not selected_factory_name:
+                st.error("❌ 请勾选收货制衣厂！")
+            else:
+                with st.spinner("🤖 正在读取 RPA 结果..."):
+                    try:
+                        rpa_result = load_accessory_rpa_result(expected_internal_code=internal_code.strip())
+                        if not rpa_result["ok"]:
+                            st.error(rpa_result["message"])
+                        else:
+                            file_obj = open_file_for_streamlit_upload(rpa_result["file_path"])
+                            params = {
+                                'order_date': acc_order_date,
+                                'has_69': has_69,
+                                'has_wash': has_wash,
+                                'wash_material': wash_material,
+                                'is_two_pack': is_two_pack,
+                                'accessory_type': accessory_type,
+                                'internal_code': internal_code,
+                                'material_text': material_text,
+                                'selected_factory_addr': selected_factory_addr,
+                                'selected_factory_name': selected_factory_name
+                            }
+                            excel_bytes, missing_69_count, download_filename = _generate_accessory_from_source(
+                                file_obj, params, uname
+                            )
+                            st.success(f"🎉 {rpa_result['message']}")
+                            if has_69 == '有' and missing_69_count > 0:
+                                st.warning(f"⚠️ 提示：有 {missing_69_count} 个条码未匹配到 69 码。")
+
+                            st.download_button(
+                                label="📥 下载辅料下单表",
+                                data=excel_bytes,
+                                file_name=download_filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                type="primary",
+                                key="download_rpa_accessory",
+                                on_click=_reset_accessory_form_state
+                            )
+                    except Exception as e:
+                        st.error(f"读取 RPA 结果失败: {e}")
 def save_accessory_history(uploaded_file, params, excel_bytes, uname):
     """【内部逻辑】辅助函数：解析上传文件并保存至数据库历史"""
     try:
