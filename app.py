@@ -154,37 +154,68 @@ def main():
             
     st.title("📦 智能物料管理系统")
     
-    # 根据权限展示不同的 Tab
+    # 隐藏以下暂不用页面：
+    # 其他物料下单、入库、制衣厂消耗、跨境物料
+    # 仅隐藏入口，不删除原模块代码，后续需要可恢复。
     if role == 'admin':
-        tabs = st.tabs(["📊 看板", "🛒 采购合同下单", "📦 其他物料下单", "📋 包装袋下单", "🖨️ 辅料下单", "📥 入库", "👕 制衣厂消耗", "🌍 跨境物料", "📥 飞书采购申请", "📜 历史", "⚙️ 后台"])
-        with tabs[0]: render_dashboard()
-        with tabs[1]: render_purchase_order(name)
-        with tabs[2]: render_other_material_outbound(name)
-        with tabs[3]: render_outbound(name)
-        with tabs[4]: render_accessory_order(name)
-        with tabs[5]: render_inbound(name)
-        with tabs[6]: render_garment_consumption(name)
-        with tabs[7]: render_crossborder(name)
-        with tabs[8]: show_feishu_sync(name)   # 添加 name 参数 
-        with tabs[9]: render_history(role, name)
-        with tabs[10]: render_admin()
+        tabs = st.tabs([
+            "📊 看板",
+            "🛒 采购合同下单",
+            "📋 包装袋下单",
+            "🖨️ 辅料下单",
+            "📥 飞书采购申请",
+            "📜 历史",
+            "⚙️ 后台"
+        ])
+
+        with tabs[0]:
+            render_dashboard()
+        with tabs[1]:
+            render_purchase_order(name)
+        with tabs[2]:
+            render_outbound(name)
+        with tabs[3]:
+            render_accessory_order(name)
+        with tabs[4]:
+            show_feishu_sync(name)
+        with tabs[5]:
+            render_history(role, name)
+        with tabs[6]:
+            render_admin()
+
     elif role == 'sales':
-        tabs = st.tabs(["📊 看板", "🛒 采购合同下单", "📦 其他物料下单", "📋 包装袋下单", "🖨️ 辅料下单", "👕 制衣厂消耗", "🌍 跨境物料", "📥 飞书采购申请", "📜 历史"])
-        # ... 对应渲染函数 ...
-        with tabs[0]: render_dashboard()
-        with tabs[1]: render_purchase_order(name)
-        with tabs[2]: render_other_material_outbound(name)
-        with tabs[3]: render_outbound(name)
-        with tabs[4]: render_accessory_order(name)
-        with tabs[5]: render_garment_consumption(name)
-        with tabs[6]: render_crossborder(name)
-        with tabs[7]: show_feishu_sync(name) 
-        with tabs[8]: render_history(role, name)
+        tabs = st.tabs([
+            "📊 看板",
+            "🛒 采购合同下单",
+            "📋 包装袋下单",
+            "🖨️ 辅料下单",
+            "📥 飞书采购申请",
+            "📜 历史"
+        ])
+
+        with tabs[0]:
+            render_dashboard()
+        with tabs[1]:
+            render_purchase_order(name)
+        with tabs[2]:
+            render_outbound(name)
+        with tabs[3]:
+            render_accessory_order(name)
+        with tabs[4]:
+            show_feishu_sync(name)
+        with tabs[5]:
+            render_history(role, name)
+
     else:
-        tabs = st.tabs(["📊 看板", "📥 入库", "📜 历史"])
-        with tabs[0]: render_dashboard()
-        with tabs[1]: render_inbound(name)
-        with tabs[2]: render_history(role, name)
+        tabs = st.tabs([
+            "📊 看板",
+            "📜 历史"
+        ])
+
+        with tabs[0]:
+            render_dashboard()
+        with tabs[1]:
+            render_history(role, name)
 
 if st.session_state['logged_in']:
     main()

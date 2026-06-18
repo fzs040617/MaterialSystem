@@ -11,6 +11,7 @@ from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as xlImage
 import base64
+from copy import copy
 
 # 导入自定义模块
 from config import STANDARD_MAP
@@ -134,6 +135,83 @@ def _generate_single_other_mat_excel(items, src_factory, g_df):
 # ==========================================
 # 2. 辅料下单表引擎
 # ==========================================
+
+def accessory_text_width(value):
+    """根据中英文混排估算 Excel 显示宽度"""
+    if value is None:
+        return 0
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return 0
+
+    width = 0
+    for ch in text:
+        # 中文、中文标点、全角字符按 2 个宽度估算
+        width += 2 if ord(ch) > 255 else 1
+
+    return width
+
+
+def auto_fit_accessory_columns_compact(ws, main_max_col, min_width=5, padding=1):
+    """
+    辅料下单表主表列宽自动紧凑：
+    - 只调整主表明细列，不让底部收件信息、图片、右侧执行标准撑宽
+    - 根据标题和明细内容动态计算
+    - 每列设置最大宽度，避免空白过大
+    """
+    # 按列名控制最大宽度，避免整体太松
+    width_rules = {
+        "69码": (5, 7),
+        "商家编码": (8, 16),
+        "货品编号": (8, 16),
+        "货品名称": (10, 22),
+        "规格名称": (8, 14),
+        "规格码": (8, 14),
+        "采购量": (6, 9),
+        "吊牌采购量": (9, 12),
+        "洗水唛采购量": (10, 14),
+        "零售价格": (8, 10),
+        "平台": (7, 12),
+        "内部码": (8, 16),
+    }
+
+    max_row = ws.max_row
+
+    for col_idx in range(1, main_max_col + 1):
+        col_letter = get_column_letter(col_idx)
+        header = ws.cell(row=1, column=col_idx).value
+        header_text = str(header).strip() if header is not None else ""
+
+        col_min_width, col_max_width = width_rules.get(header_text, (min_width, 18))
+
+        max_len = accessory_text_width(header_text)
+
+        # 只扫描主表明细区域：第1行标题 + 明细行
+        for row_idx in range(2, max_row + 1):
+            value = ws.cell(row=row_idx, column=col_idx).value
+
+            # 遇到底部汇总/收件信息后，不继续用这些长文本撑宽主表
+            if col_idx == 1 and isinstance(value, str):
+                if "收件信息：" in value or "洗水唛：" in value or "绿色吊牌" in value or "五张新吊牌" in value:
+                    break
+
+            max_len = max(max_len, accessory_text_width(value))
+
+        adjusted_width = max(col_min_width, min(max_len + padding, col_max_width))
+        ws.column_dimensions[col_letter].width = adjusted_width
+
+def apply_accessory_font_name(ws, font_name="微软雅黑"):
+    """统一辅料下单表所有文字字体，不改变原来的字号、颜色、加粗等格式"""
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is None:
+                continue
+
+            new_font = copy(cell.font)
+            new_font.name = font_name
+            cell.font = new_font
+
 def generate_accessory_excel(uploaded_file, params):
     """清洗旺店通数据并生成辅料下单表"""
     file_ext = os.path.splitext(uploaded_file.name)[1].lower()
@@ -145,8 +223,8 @@ def generate_accessory_excel(uploaded_file, params):
     if missing_cols:
         raise ValueError(f"原表单缺少必要列：{', '.join(missing_cols)}")
 
-    optional_cols = ['采购量'] if '采购量' in df.columns else []
-    df = df[required_cols + optional_cols].copy()
+    # 输入表可以有“采购量”列，也可以没有；但输出表不再使用/显示“采购量”
+    df = df[required_cols].copy()
 
     # 去掉旺店通原表自带的合计 / 总计 / 小计行，避免写入明细表，也避免数量重复统计
     summary_keywords = r'合计|总计|小计'
@@ -242,7 +320,7 @@ def generate_accessory_excel(uploaded_file, params):
 
         price_text = f"{price_num:.10f}".rstrip('0').rstrip('.')
         return f"{rmb_symbol}{price_text}"
-    
+
     def format_summary_qty(value):
         """底部汇总数量格式：367个，避免 367.0个"""
         try:
@@ -257,7 +335,7 @@ def generate_accessory_excel(uploaded_file, params):
         """底部汇总名称：显示完整辅料款式名称"""
         text = clean_excel_value(value)
         return text or "吊牌"
-    
+
     def split_material_lines(value, max_lines=4):
         """洗水唛材质表：按行拆分，最多保留4行"""
         text = clean_excel_value(value)
@@ -307,12 +385,6 @@ def generate_accessory_excel(uploaded_file, params):
         '规格名称': df['规格名称'],
         '规格码': df['规格码'].map(format_size_text),
     })
-
-    # 采购量仅作为显示列，不参与吊牌/洗水唛数量计算
-    if '采购量' in df.columns:
-        out_cols['采购量'] = df['采购量']
-    else:
-        out_cols['采购量'] = df['采购确认量']
 
     out_cols.update({
         '吊牌采购量': df['吊牌采购量'],
@@ -370,7 +442,12 @@ def generate_accessory_excel(uploaded_file, params):
 
         header_fill = PatternFill("solid", fgColor="9999FF")
         yellow_fill = PatternFill("solid", fgColor="FFFF00")
-        header_font = Font(bold=True)
+        header_font = Font(name="微软雅黑", bold=True)
+
+        # 右侧执行标准区域字体：只放大右侧，不影响左边主表
+        standard_title_font = Font(name="微软雅黑", bold=True, size=16)
+        standard_font = Font(name="微软雅黑", bold=True, size=14)
+        standard_red_font = Font(name="微软雅黑", bold=True, size=14, color="FF0000")
 
         for cell in ws[1]:
             if cell.value:
@@ -404,7 +481,7 @@ def generate_accessory_excel(uploaded_file, params):
 
             warn_cell = ws.cell(row=wash_start_row, column=offset_col + 1, value="洗水唛有斜杠")
             warn_cell.fill = yellow_fill
-            warn_cell.font = Font(bold=True, color="FF0000", size=18)
+            warn_cell.font = Font(name="微软雅黑", bold=True, color="FF0000", size=18)            
             warn_cell.alignment = Alignment(horizontal='center', vertical='center')
 
             wash_image_path = get_wash_label_image_path()
@@ -438,19 +515,34 @@ def generate_accessory_excel(uploaded_file, params):
 
         for i, text in enumerate(tag_data):
             cell = ws.cell(row=standard_start_row + i, column=offset_col, value=text)
-            if i in (0, len(tag_data) - 1):
-                cell.fill = yellow_fill
+            cell.font = standard_font
+            cell.alignment = Alignment(horizontal='left', vertical='center')
+
+            # “润微”标题更醒目
             if i == 0:
-                cell.font = header_font
+                cell.fill = yellow_fill
+                cell.font = standard_title_font
                 cell.alignment = Alignment(horizontal='center', vertical='center')
+                ws.row_dimensions[standard_start_row + i].height = 24
+
+            # 执行标准行黄底加粗
+            elif i == len(tag_data) - 1:
+                cell.fill = yellow_fill
+                cell.font = standard_font
+                ws.row_dimensions[standard_start_row + i].height = 22
+
+            else:
+                ws.row_dimensions[standard_start_row + i].height = 22
 
         # 仅保留执行标准右侧内部码，位置跟随执行标准区域动态下移
         if internal_code:
-            ws.cell(
+            internal_cell = ws.cell(
                 row=standard_start_row + len(tag_data) - 1,
                 column=offset_col + 1,
                 value=f"内部码：{internal_code}"
             )
+            internal_cell.font = standard_red_font
+            internal_cell.alignment = Alignment(horizontal='left', vertical='center')
 
         summary_row = max(len(df_out) + 3, standard_start_row + len(tag_data) + 3)
         tag_qty = int(df['吊牌采购量'].sum())
@@ -497,13 +589,19 @@ def generate_accessory_excel(uploaded_file, params):
 
         ws.cell(row=current_row, column=1, value=f"收件信息：{selected_factory_addr}")
 
-        ws.column_dimensions[get_column_letter(offset_col - 1)].width = 22
-        ws.column_dimensions[get_column_letter(offset_col)].width = 28
-        ws.column_dimensions[get_column_letter(offset_col + 1)].width = 22
+        # 主表列宽：根据实际字数自动紧凑调整
+        auto_fit_accessory_columns_compact(ws, main_max_col=len(df_out.columns), min_width=5, padding=1)
 
-        adjust_column_width(ws)
+        # 主表和右侧区域之间的空白列缩窄；右侧执行标准区域保持可读
+        ws.column_dimensions[get_column_letter(offset_col - 1)].width = 3
+        ws.column_dimensions[get_column_letter(offset_col)].width = 26
+        ws.column_dimensions[get_column_letter(offset_col + 1)].width = 20
+
+        apply_accessory_font_name(ws, "微软雅黑")
 
     return output.getvalue(), missing_69_count
+
+
 # ==========================================
 # 3. 采购合同与库存报表引擎
 # ==========================================

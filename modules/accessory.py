@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import datetime
 import os,re
@@ -7,8 +8,7 @@ import threading
 from sync_history_to_feishu import migrate_accessory_history_to_feishu
 from database import get_db_conn, load_data
 from excel_engines import generate_accessory_excel
-from rpa_bridge import load_accessory_rpa_result, open_file_for_streamlit_upload
-
+from rpa_bridge import load_accessory_rpa_result, open_file_for_streamlit_upload, write_accessory_order_rpa_request, load_accessory_order_rpa_status, start_accessory_order_rpa
 def _safe_accessory_filename_part(value):
     """清理辅料下单下载文件名片段"""
     text = "" if value is None else str(value).strip()
@@ -77,6 +77,38 @@ def _reset_accessory_form_state():
 
     # 这些组件用动态 key，递增后会强制刷新为空
     st.session_state["acc_form_reset_token"] = st.session_state.get("acc_form_reset_token", 0) + 1
+
+def _is_accessory_rpa_forbidden_now():
+    """辅料下单 RPA 禁用时间段：09:00-10:00、14:00-15:00"""
+    now = datetime.datetime.now()
+    current_time = now.time()
+
+    forbidden_ranges = [
+        (datetime.time(9, 0), datetime.time(10, 0)),
+        (datetime.time(14, 0), datetime.time(15, 0)),
+    ]
+
+    all_ranges_text = "09:00-10:00、14:00-15:00"
+
+    for start_time, end_time in forbidden_ranges:
+        if start_time <= current_time < end_time:
+            return True, (
+                f"当前时间 {now.strftime('%H:%M')} 处于 RPA 禁用时间段。"
+                f"辅料下单 RPA 禁用时间段为：{all_ranges_text}。"
+                "请在禁用时间段结束后再发起辅料下单 RPA 查询。"
+            )
+
+    return False, ""
+
+
+def _show_accessory_rpa_time_notice():
+    """显示辅料下单 RPA 时间段提示"""
+    forbidden, message = _is_accessory_rpa_forbidden_now()
+    if forbidden:
+        st.error(f"⛔ {message}")
+    else:
+        st.caption("RPA 禁用时间段：09:00-10:00、14:00-15:00；其余时间可发起查询。")        
+    return forbidden
 
 def render_accessory_order(uname):
     """渲染辅料下单界面"""
@@ -235,7 +267,118 @@ def render_accessory_order(uname):
                         st.error(f"处理失败: {e}")
 
     with rpa_tab:
-        st.info("先运行影刀 RPA，再点下方按钮读取 result.json。")
+        st.info(
+            "半自动 RPA 流程：先填写采购单查询码 → 点击生成 RPA 请求文件 → 手动运行影刀 RPA → 再点击读取 RPA 结果生成辅料下单表。"
+        )
+
+        rpa_time_forbidden = _show_accessory_rpa_time_notice()
+
+        def show_rpa_status(status_box, rpa_status):
+            """只刷新状态显示区域，不刷新整个浏览器页面"""
+            with status_box.container():
+                if rpa_status.get("exists"):
+                    status_value = str(rpa_status.get("status", "")).strip()
+                    status_message = str(rpa_status.get("message", "")).strip()
+                    status_code = str(rpa_status.get("internal_code", "")).strip()
+                    status_time = str(rpa_status.get("updated_at", "")).strip()
+
+                    if status_value == "pending":
+                        st.warning(f"⏳ {status_message or 'RPA 请求文件已生成，请手动运行影刀 RPA'}")
+                    elif status_value == "running":
+                        st.info(f"🔄 {status_message or 'RPA 正在运行，请等待'}")
+                    elif status_value == "success":
+                        st.success(f"✅ {status_message or '查询成功，旺店通原表已下载完成'}")
+                    elif status_value == "failed":
+                        st.error(f"❌ {status_message or 'RPA 查询失败'}")
+                    else:
+                        st.info(status_message or "已检测到 RPA 状态文件")
+
+                    if status_code:
+                        st.caption(f"采购单查询码：{status_code}")
+                    if status_time:
+                        st.caption(f"状态更新时间：{status_time}")
+
+                    return status_value
+                else:
+                    st.caption("暂未生成 RPA 请求。")
+                    return ""
+
+        status_box = st.empty()
+        current_rpa_status = load_accessory_order_rpa_status()
+        current_status_value = show_rpa_status(status_box, current_rpa_status)
+
+        rpa_request_btn = st.button(
+            "生成并启动 RPA 查询",
+            use_container_width=True,
+            key="btn_create_rpa_request_accessory"
+        )
+
+        if rpa_request_btn:
+            blocked, blocked_message = _is_accessory_rpa_forbidden_now()
+            rpa_internal_code = str(internal_code or "").strip()
+
+            if blocked:
+                st.error(f"⛔ {blocked_message}")
+            elif not rpa_internal_code:
+                st.error("请先填写采购单查询码")
+            else:
+                try:
+                    current_status = load_accessory_order_rpa_status()
+                    current_status_value = str(current_status.get("status", "")).strip()
+
+                    if current_status_value in ("pending", "running"):
+                        st.warning("当前已有 RPA 查询正在进行，请等待完成后再启动新的查询。")
+                    else:
+                        request_result = write_accessory_order_rpa_request(rpa_internal_code)
+
+                        if not request_result.get("success"):
+                            st.error(request_result.get("message", "生成 RPA 请求文件失败"))
+                        else:
+                            start_result = start_accessory_order_rpa()
+
+                            st.success("已生成 RPA 请求文件")
+                            st.info(f"采购单查询码：{request_result.get('internal_code', rpa_internal_code)}")
+                            st.code(request_result.get("request_path", ""), language="text")
+
+                            if start_result.get("success"):
+                                st.success(start_result.get("message", "影刀 RPA 已启动，请等待状态更新"))
+
+                                if start_result.get("already_running"):
+                                    st.caption("检测到影刀已经打开，本次没有重复打开新窗口。")
+                                elif start_result.get("pid"):
+                                    st.caption(f"影刀进程 PID：{start_result.get('pid')}")
+                            else:
+                                st.error(start_result.get("message", "影刀 RPA 启动失败"))
+
+                except Exception as e:
+                    st.error(f"生成并启动 RPA 查询失败: {e}")
+
+        should_poll_rpa = (
+            st.session_state.get("acc_rpa_status_polling", False)
+            or current_status_value in ("pending", "running")
+        )
+
+        if should_poll_rpa:
+            import time
+
+            st.caption("⏱️ 正在自动刷新 RPA 状态，每 5 秒更新一次。查询成功或失败后会停止。")
+
+            # 最多轮询 5 分钟，避免异常情况下页面一直卡住
+            for _ in range(60):
+                latest_status = load_accessory_order_rpa_status()
+                latest_value = show_rpa_status(status_box, latest_status)
+
+                if latest_value in ("success", "failed"):
+                    st.session_state["acc_rpa_status_polling"] = False
+                    break
+
+                if latest_value not in ("pending", "running"):
+                    st.session_state["acc_rpa_status_polling"] = False
+                    break
+
+                time.sleep(5)
+
+        st.divider()
 
         rpa_result_btn = st.button(
             "读取 RPA 结果并生成辅料下单表",
