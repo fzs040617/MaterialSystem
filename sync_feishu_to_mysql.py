@@ -130,22 +130,73 @@ def sync_feishu_to_mysql():
         for item in res_fac:
             fields = item.get('fields', {})
             
-            # 增加一个内部防爆提取函数，兼容飞书各种文本格式
-            def get_val(key, default=""):
-                v = fields.get(key, default)
-                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                    return str(v[0].get('text', '')).strip()
-                return str(v).strip() if v else default
+            # 增强版字段提取：兼容飞书文本、单选、多选、人员、富文本等返回格式
+            def flatten_val(v):
+                if v is None:
+                    return []
 
-            f_name = get_val('工厂名称')
-            f_contact = get_val('联系方式')
-            f_type = get_val('业务类型', '包装袋')
-            
-            # 🌟 新增：提取地址和负责人
-            f_address = get_val('地址')
-            f_manager = get_val('负责人')
-            
-            if not f_name: continue
+                if isinstance(v, str):
+                    text = v.strip()
+                    return [text] if text else []
+
+                if isinstance(v, (int, float, bool)):
+                    text = str(v).strip()
+                    return [text] if text else []
+
+                if isinstance(v, list):
+                    result = []
+                    for item_val in v:
+                        result.extend(flatten_val(item_val))
+                    return result
+
+                if isinstance(v, dict):
+                    result = []
+                    for k in ("text", "name", "value", "label"):
+                        if k in v:
+                            result.extend(flatten_val(v.get(k)))
+
+                    if not result:
+                        for sub_val in v.values():
+                            result.extend(flatten_val(sub_val))
+
+                    return result
+
+                text = str(v).strip()
+                return [text] if text else []
+
+            def get_val(*keys, default=""):
+                for key in keys:
+                    if key not in fields:
+                        continue
+
+                    values = flatten_val(fields.get(key))
+                    for val in values:
+                        text = str(val).strip()
+                        if text and text.lower() not in ("nan", "none", "[]", "{}"):
+                            return text
+
+                return default
+
+            f_name = get_val(
+                '工厂名称',
+                '厂家名称',
+                '发货方',
+                '发货方名称',
+                '源工厂',
+                '源工厂名称',
+                '名称',
+                'name'
+            )
+            f_contact = get_val('联系方式', '联系电话', '电话', 'contact')
+            f_type = get_val('业务类型', '工厂类型', '类型', default='包装袋')
+
+            # 提取地址和负责人
+            f_address = get_val('地址', '工厂地址', '发货地址', 'address')
+            f_manager = get_val('负责人', '联系人', '主负责人', 'manager')
+
+            if not f_name:
+                safe_log(f"  ⚠️ 跳过一条发货工厂记录：未识别到工厂名称。record_id={item.get('record_id')}，字段={list(fields.keys())}")
+                continue
             feishu_living_facs.add(f_name.lower())
             
             cursor.execute("SELECT name FROM packaging_factories WHERE name=%s", (f_name,))
@@ -163,11 +214,23 @@ def sync_feishu_to_mysql():
                     VALUES (%s, %s, %s, %s, %s)
                 """, (f_name, f_contact, f_type, f_address, f_manager))
                 
+        # 安全保护：不再自动删除本地工厂
+        # 原因：如果飞书接口短暂异常、表格权限异常、或字段读取异常，自动删除可能误删正在使用的工厂。
         cursor.execute("SELECT name FROM packaging_factories")
+        local_extra_facs = []
+
         for row in cursor.fetchall():
-            if row[0].strip().lower() not in feishu_living_facs:
-                cursor.execute("DELETE FROM packaging_factories WHERE name=%s", (row[0],))
-        safe_log("  ✅ 发货工厂档案对齐完成 (含地址与负责人更新)。")
+            local_name = str(row[0] or "").strip()
+            if local_name and local_name.lower() not in feishu_living_facs:
+                local_extra_facs.append(local_name)
+
+        if local_extra_facs:
+            safe_log(
+                f"  ⚠️ 本地存在 {len(local_extra_facs)} 个飞书本次未返回的工厂，"
+                f"安全起见未自动删除。示例：{local_extra_facs[:5]}"
+            )
+
+        safe_log("  ✅ 发货工厂档案同步完成：已新增/更新飞书返回的工厂，本次未自动删除本地工厂。")
 
         # ==========================================
         # 🌟 流程 B.5：本地自动授权 (新工厂默认拥有所有规格)
