@@ -386,9 +386,10 @@ def generate_accessory_excel(uploaded_file, params):
         '规格码': df['规格码'].map(format_size_text),
     })
 
+    # 输出表不显示“采购量”列；输入表有/没有“采购量”都不影响生成
     out_cols.update({
-        '吊牌采购量': df['吊牌采购量'],
         '洗水唛采购量': df['洗水唛采购量'],
+        '吊牌采购量': df['吊牌采购量'],
         '零售价格': df['零售价格'],
         '平台': df['平台'],
         '内部码': params['internal_code']
@@ -594,8 +595,8 @@ def generate_accessory_excel(uploaded_file, params):
 
         # 主表和右侧区域之间的空白列缩窄；右侧执行标准区域保持可读
         ws.column_dimensions[get_column_letter(offset_col - 1)].width = 3
-        ws.column_dimensions[get_column_letter(offset_col)].width = 26
-        ws.column_dimensions[get_column_letter(offset_col + 1)].width = 20
+        ws.column_dimensions[get_column_letter(offset_col)].width = 36
+        ws.column_dimensions[get_column_letter(offset_col + 1)].width = 24
 
         apply_accessory_font_name(ws, "微软雅黑")
 

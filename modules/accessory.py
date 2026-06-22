@@ -110,6 +110,27 @@ def _show_accessory_rpa_time_notice():
         st.caption("RPA 禁用时间段：09:00-10:00、14:00-15:00；其余时间可发起查询。")        
     return forbidden
 
+def _compact_choice(label, options, key, default=None):
+    """紧凑按钮式选择；如果当前 Streamlit 不支持 segmented_control，则自动退回 radio"""
+    if default is None or default not in options:
+        default = options[0]
+
+    if hasattr(st, "segmented_control"):
+        value = st.segmented_control(
+            label,
+            options,
+            default=default,
+            key=key
+        )
+        return value or default
+
+    return st.radio(
+        label,
+        options,
+        horizontal=True,
+        key=key
+    )
+
 def render_accessory_order(uname):
     """渲染辅料下单界面"""
     st.header("🖨️ 辅料下单表自动生成")
@@ -123,62 +144,68 @@ def render_accessory_order(uname):
 
     # 2. 基础逻辑配置
     st.subheader("⚙️ 1. 基础配置")
-    c1, c2, c3 = st.columns(3)
+
+    # 第一行：紧凑按钮式选择，减少横向空白
+    c1, c2, c3, c4 = st.columns([0.9, 0.9, 1.8, 0.9])
+
     with c1:
-        st.markdown("**国际条码 (69码)**")
-        has_69 = st.radio(
-            "是否有69码",
+        has_69 = _compact_choice(
+            "69码",
             ["无", "有"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="acc_has_69"
+            key="acc_has_69",
+            default="无"
         )
+
     with c2:
-        st.markdown("**洗水唛**")
-        has_wash = st.radio(
-            "是否有洗水唛",
+        has_wash = _compact_choice(
+            "洗水唛",
             ["无", "有"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="acc_has_wash"
+            key="acc_has_wash",
+            default="无"
         )
-        wash_material = st.radio(
-            "洗水唛材料",
-            ["胶带（唯品/三野）", "布带（天猫/抖音）"],
-            horizontal=True,
-            key="acc_wash_material"
-        ) if has_wash == "有" else None        
+
     with c3:
-        st.markdown("**辅料款式 (必选)**")
-        accessory_type = st.radio(
-            "款式",
+        accessory_type = _compact_choice(
+            "辅料款式",
             ["绿色吊牌+吊粒", "五张新吊牌+防伪带", "贴纸"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="acc_accessory_type"
+            key="acc_accessory_type",
+            default="绿色吊牌+吊粒"
         )
-    c4, c5 = st.columns(2)
-    internal_code = c4.text_input(
-        "采购单查询码 (必填)",
+
+    with c4:
+        is_two_pack = _compact_choice(
+            "两件装",
+            ["否", "是"],
+            key="acc_is_two_pack",
+            default="否"
+        )
+
+    # 第二行：采购单查询码 + 洗水唛相关输入
+    c5, c6 = st.columns([1.25, 1])
+
+    internal_code = c5.text_input(
+        "采购单查询码（必填）",
         placeholder="例如: CG260206012",
         key="acc_internal_code"
-    )    
+    )
+
     if has_wash == "有":
-        material_text = c5.text_area(
+        wash_material = _compact_choice(
+            "洗水唛材料",
+            ["胶带（唯品/三野）", "布带（天猫/抖音）"],
+            key="acc_wash_material",
+            default="胶带（唯品/三野）"
+        )
+
+        material_text = c6.text_area(
             "洗水唛材质表（选填，最多4行）",
             placeholder="例如：\n锦纶79.5%\n氨纶20.5%",
-            height=90,
+            height=80,
             key="acc_material_text"
         )
     else:
+        wash_material = None
         material_text = ""
-    is_two_pack = st.radio(
-        "是否两件装",
-        ["否", "是"],
-        horizontal=True,
-        index=0,
-        key="acc_is_two_pack"
-    )
     # 3. 制衣厂选择逻辑
     st.subheader("🏭 2. 选择收货制衣厂")
     df_g = load_data("garment_factories")
