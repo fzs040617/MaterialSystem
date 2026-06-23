@@ -657,6 +657,24 @@ def generate_rw_purchase_contract_excel(contract_no, factory_name, items):
             for c in range(start_c, end_c + 1):
                 ws.cell(row=r, column=c).border = border
 
+    def _text_display_width(value):
+        """估算中英文混排文本宽度，用于合同明细行高自适应"""
+        text = "" if value is None else str(value)
+        width = 0
+        for ch in text:
+            width += 2 if ord(ch) > 255 else 1
+        return width
+
+    def _estimate_wrapped_lines(value, col_width):
+        """根据列宽估算需要几行显示"""
+        text_width = _text_display_width(value)
+        if text_width <= 0:
+            return 1
+
+        safe_width = max(float(col_width or 10), 1.0)
+        return max(1, int((text_width + safe_width - 1) // safe_width))
+
+
     # 1. 顶部公司名与合同标题
     make_merged_cell(1, 1, 13, "广州润微服装有限公司", font_title1, align_c)
     make_merged_cell(2, 1, 13, "原材料订购合同", font_title2, align_c)
@@ -693,19 +711,9 @@ def generate_rw_purchase_contract_excel(contract_no, factory_name, items):
     r = 11
     total_amount = 0.0
     
-    # 预计算全表统一的最大行高
-    global_max_lines = 1
-    has_image = False
-    for item in items:
-        name_text = str(item.get('物料名称', ''))
-        lines_needed = (len(name_text) // 11) + 1 if len(name_text) > 11 else 1
-        if lines_needed > global_max_lines:
-            global_max_lines = lines_needed
-        if str(item.get('图片', '')).strip():
-            has_image = True
-    
-    base_height = 25 + (global_max_lines - 1) * 15
-    uniform_row_height = max(65, base_height) if has_image else base_height
+    # 合同明细区列宽，用于估算自动换行后的行高
+    # 顺序对应：A-M列
+    contract_col_widths = [12, 22, 12, 10, 12, 18, 8, 6, 18, 12, 12, 14, 11]
 
     for item in items:
         code = item.get('物料编号', '')
@@ -731,7 +739,25 @@ def generate_rw_purchase_contract_excel(contract_no, factory_name, items):
             cell.border = border_thin
             cell.alignment = align_wrap_c
             
-        ws.row_dimensions[r].height = uniform_row_height 
+        # 根据本行长文本动态调整行高，重点解决“收货标准”内容显示不全
+        row_line_count = max(
+            _estimate_wrapped_lines(name, contract_col_widths[1]),
+            _estimate_wrapped_lines(material, contract_col_widths[2]),
+            _estimate_wrapped_lines(color, contract_col_widths[3]),
+            _estimate_wrapped_lines(size, contract_col_widths[4]),
+            _estimate_wrapped_lines(standard, contract_col_widths[5]),
+            _estimate_wrapped_lines(remark, contract_col_widths[11]),
+            1
+        )
+
+        row_height = 22 + (row_line_count - 1) * 16
+
+        # 有图片时至少保留图片高度
+        if str(item.get('图片', '')).strip():
+            row_height = max(row_height, 70)
+
+        # 防止极端长文本把行拉得过高
+        ws.row_dimensions[r].height = min(max(row_height, 28), 180)
 
         # 处理并贴入图片
         img_str = str(item.get('图片', '')).strip()
@@ -842,8 +868,9 @@ def generate_rw_purchase_contract_excel(contract_no, factory_name, items):
     make_merged_cell(r, 1, 6, "签订日期：", font_normal, align_l)
     make_merged_cell(r, 7, 13, "签订日期：", font_normal, align_l)
     
-    # 8. 严格设定列宽 
-    col_widths = [12, 22, 12, 10, 12, 10, 8, 6, 18, 12, 12, 14, 11]
+    # 8. 严格设定列宽
+    # F列“收货标准”适当加宽，避免长标准内容显示不全
+    col_widths = [12, 22, 12, 10, 12, 18, 8, 6, 18, 12, 12, 14, 11]
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
         

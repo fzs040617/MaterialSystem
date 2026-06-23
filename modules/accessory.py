@@ -9,43 +9,104 @@ from sync_history_to_feishu import migrate_accessory_history_to_feishu
 from database import get_db_conn, load_data
 from excel_engines import generate_accessory_excel
 from rpa_bridge import load_accessory_rpa_result, open_file_for_streamlit_upload, write_accessory_order_rpa_request, load_accessory_order_rpa_status, start_accessory_order_rpa
-def _safe_accessory_filename_part(value):
+
+def _safe_accessory_filename_part(value, remove_spaces=False):
     """清理辅料下单下载文件名片段"""
     text = "" if value is None else str(value).strip()
 
     # 去掉 Windows 文件名不允许字符
     text = re.sub(r'[\\/:*?"<>|]+', '', text)
 
-    # 去掉括号、加号、空白，让款式/工厂名更干净
+    # 去掉加号和括号；多个空白合并
     text = text.replace("+", "")
     text = re.sub(r'[（）()]', '', text)
-    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    if remove_spaces:
+        text = re.sub(r'\s+', '', text)
 
     return text or "未填写"
 
-
-def _format_accessory_output_filename(internal_code, accessory_type, selected_factory_name, order_date):
-    """辅料下单表下载文件名：内部码 款式名称 工厂名称 日期.xlsx"""
-    code_part = _safe_accessory_filename_part(internal_code)
-    style_part = _safe_accessory_filename_part(accessory_type)
-    factory_part = _safe_accessory_filename_part(selected_factory_name)
+def _format_accessory_output_filename(internal_code, accessory_type, product_name, selected_factory_name, order_date):
+    """辅料下单表下载文件名：内部码 吊牌款式 款式名称工厂名字 日期.xlsx"""
+    code_part = _safe_accessory_filename_part(internal_code, remove_spaces=True)
+    style_part = _safe_accessory_filename_part(accessory_type, remove_spaces=True)
+    product_part = _safe_accessory_filename_part(product_name, remove_spaces=False)
+    factory_part = _safe_accessory_filename_part(selected_factory_name, remove_spaces=True)
 
     if hasattr(order_date, "strftime"):
         date_part = order_date.strftime("%Y%m%d")
     else:
-        raw_date = _safe_accessory_filename_part(order_date)
+        raw_date = _safe_accessory_filename_part(order_date, remove_spaces=True)
         digits = re.sub(r'\D+', '', raw_date)
         date_part = digits if len(digits) == 8 else raw_date
 
-    return f"{code_part} {style_part} {factory_part} {date_part}.xlsx"
+    # 款式名称和工厂名按需求连在一起；吊牌款式中的“+”已被清理
+    if product_part and product_part != "未填写":
+        name_part = f"{product_part}{factory_part}"
+    else:
+        name_part = factory_part
 
+    return f"{code_part} {style_part} {name_part} {date_part}.xlsx"
+
+def _extract_accessory_product_name_from_source(source_file):
+    """从旺店通原表中提取款式名称，用于辅料下单表文件名"""
+    try:
+        if hasattr(source_file, "seek"):
+            source_file.seek(0)
+
+        file_name = getattr(source_file, "name", "")
+        file_ext = os.path.splitext(file_name)[1].lower()
+
+        if file_ext == ".csv":
+            df_tmp = pd.read_csv(source_file)
+        else:
+            df_tmp = pd.read_excel(source_file)
+
+        df_tmp.columns = [str(col).strip() for col in df_tmp.columns]
+
+        if "货品名称" not in df_tmp.columns:
+            return ""
+
+        summary_keywords = r'合计|总计|小计'
+        summary_mask = pd.Series(False, index=df_tmp.index)
+
+        for col in df_tmp.columns:
+            summary_mask = summary_mask | df_tmp[col].fillna('').astype(str).str.strip().str.contains(
+                summary_keywords,
+                regex=True,
+                na=False
+            )
+
+        df_detail = df_tmp[~summary_mask].copy()
+        names = df_detail["货品名称"].dropna().astype(str).str.strip()
+        names = names[names != ""]
+
+        if names.empty:
+            return ""
+
+        product_name = names.iloc[0]
+        product_name = re.sub(r'\(VIP\)|（VIP）', '', product_name).strip()
+        return product_name
+
+    except Exception:
+        return ""
+    finally:
+        try:
+            if hasattr(source_file, "seek"):
+                source_file.seek(0)
+        except Exception:
+            pass
 
 def _generate_accessory_from_source(source_file, params, uname):
     excel_bytes, missing_69_count = generate_accessory_excel(source_file, params)
 
+    product_name = _extract_accessory_product_name_from_source(source_file)
+
     download_filename = _format_accessory_output_filename(
         internal_code=params.get("internal_code", ""),
         accessory_type=params.get("accessory_type", ""),
+        product_name=product_name,
         selected_factory_name=params.get("selected_factory_name", ""),
         order_date=params.get("order_date", datetime.date.today())
     )
